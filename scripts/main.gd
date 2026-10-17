@@ -146,56 +146,18 @@ func _edit(kind: String, b := "") -> void:
 	if charges < 1:
 		status = "No Cas9 charges left. They refill slowly."
 		return
-	var p := cursor
-	var d := lab_dna
-	match kind:
-		"rep":
-			d = d.substr(0, p) + b + d.substr(p + 1)
-		"ins":
-			d = d.substr(0, p + 1) + b + d.substr(p + 1)
-			cursor = p + 1
-		"del":
-			if d.length() <= 30:
-				status = "Genome too short to cut."
-				return
-			d = d.substr(0, p) + d.substr(p + 1)
-			cursor = mini(p, d.length() - 1)
-	charges -= 1
-	status = "Edit made."
-	if world.rng.randf() < 0.08:
-		var q := world.rng.randi() % d.length()
-		var nb := Genome.random_base(world.rng)
-		while nb == d[q]:
-			nb = Genome.random_base(world.rng)
-		d = d.substr(0, q) + nb + d.substr(q + 1)
-		status = "Off-target cut at base %d." % (q + 1)
-	lab_dna = d
+	var r := Genome.edit(lab_dna, kind, cursor, b, world.rng)
+	status = r["msg"]
+	if r["done"]:
+		charges -= 1
+		lab_dna = r["dna"]
+		cursor = r["cursor"]
 
 
 func _lab_bbcode() -> String:
-	var colors := {"A": "6df2c2", "T": "ff8f5a", "G": "6ab7ff", "C": "f2d36d"}
-	# As many bases as fit on one line (about 11 px each), centred on the cursor.
-	var span := maxi(20, int(lab_text.size.x / 11.0))
-	var lo := clampi(cursor - span / 2, 0, maxi(0, lab_dna.length() - span))
-	var hi := mini(lab_dna.length(), lo + span)
-	var s := "[b]GENE LAB[/b]  base %d of %d  |  %d / %d Cas9 charges\n" % [cursor + 1, lab_dna.length(), charges, MAX_CHARGES]
-	for i in range(lo, hi):
-		var ch := lab_dna[i]
-		var t := "[color=#%s]%s[/color]" % [colors[ch], ch]
-		if i == cursor:
-			t = "[bgcolor=#ffffff][color=#000000]%s[/color][/bgcolor]" % ch
-		s += t
-	s += "\n"
-	var g := Genome.decode(lab_dna)
-	# Two traits per row, in a table so the bars line up despite the proportional font.
-	s += "[table=4]"
-	for k in Genome.KEYS:
-		var n := roundi(g[k] * 20.0)
-		s += "[cell]%s   [/cell][cell]%s%s      [/cell]" % [Genome.LABELS[k], "█".repeat(n), "░".repeat(20 - n)]
-	s += "[/table]\n"
-	var hab := "lives in water" if g["aqua"] > 0.65 else ("amphibious" if g["aqua"] > 0.35 else "lives on land")
-	s += "%d genes, %d limbs, %s\n[color=#7fa39d]%s[/color]" % [g["genes"], g["limbs"].size(), hab, status]
-	return s
+	var header := "[b]GENE LAB[/b]  base %d of %d  |  %d / %d Cas9 charges" % [cursor + 1, lab_dna.length(), charges, MAX_CHARGES]
+	# As many bases as fit on one line (about 11 px each).
+	return GeneLab.render(lab_dna, cursor, maxi(20, int(lab_text.size.x / 11.0)), header, status)
 
 
 func _refresh() -> void:

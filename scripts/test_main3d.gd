@@ -1,0 +1,68 @@
+extends SceneTree
+## Headless 3D smoke test: godot --headless -s res://scripts/test_main3d.gd
+
+func _k(code: Key) -> InputEventKey:
+	var e := InputEventKey.new()
+	e.keycode = code
+	e.physical_keycode = code
+	e.pressed = true
+	return e
+
+
+func _init() -> void:
+	var m: Node = load("res://scenes/main3d.tscn").instantiate()
+	root.add_child(m)
+	await process_frame
+	var w: World = m.world
+	var ok: bool = w.player != null and w.player.lineage and w.creatures.size() >= 75
+	print("start: pop %d, food %d, player gen %d" % [w.creatures.size(), w.foods.size(), w.player.gen])
+
+	# walk forward through the real input path
+	var me: World.Creature = w.player
+	var start := me.pos
+	Input.parse_input_event(_k(KEY_W))
+	for _i in 60:
+		await process_frame
+	var up := _k(KEY_W)
+	up.pressed = false
+	Input.parse_input_event(up)
+	var moved := me.pos.distance_to(start)
+	print("walked %.1f units%s" % [moved, (" (blocked: %s)" % w.player_blocked) if w.player_blocked != "" else ""])
+	ok = ok and (moved > 5.0 or w.player_blocked != "")
+	ok = ok and m.model.get_child_count() > 0
+	ok = ok and m.planet.bodies.visible_instance_count + m.planet.spiky.visible_instance_count > 0
+	ok = ok and m.planet.food_mm.visible_instance_count > 0
+
+	# lay an offspring
+	var line: int = w.lineage_count()
+	w.player.e = 500.0
+	m._key(_k(KEY_R))
+	ok = ok and w.lineage_count() == line + 1
+
+	# edit the germline in the gene lab
+	m._key(_k(KEY_TAB))
+	ok = ok and m.lab_open
+	m._key(_k(KEY_RIGHT))
+	m._key(_k(KEY_G))
+	ok = ok and m.charges == m.MAX_CHARGES - 1
+	m._key(_k(KEY_TAB))
+	ok = ok and not m.lab_open
+
+	# die: control passes to the nearest descendant, whose DNA becomes the germline
+	var old: World.Creature = w.player
+	old.e = -1.0
+	w.step()
+	ok = ok and w.player != null and w.player != old and w.player.lineage and m.germline == w.player.dna
+	print("after death: player gen %d, cause '%s'" % [w.player.gen if w.player else -1, old.cause])
+
+	# the whole line dies: game over, Enter starts a new lineage
+	for c in w.creatures:
+		if c.lineage:
+			c.e = -1.0
+	w.step()
+	ok = ok and w.player == null and m.game_over
+	m._key(_k(KEY_ENTER))
+	ok = ok and w.player != null and not m.game_over
+	await process_frame
+	print("PASS" if ok else "FAIL")
+	quit(0 if ok else 1)

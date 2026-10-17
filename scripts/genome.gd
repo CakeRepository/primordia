@@ -14,6 +14,7 @@ const LABELS := {
 const BIAS := {"spikes": -2.0, "camo": -1.0, "diet": -3.0, "aqua": -3.0}
 const START_IDX := 35 # ATG
 const MAX_LEN := 1200
+const OFF_TARGET := 0.08 # chance that a CRISPR edit also hits a random base
 
 # Effect vectors: size, speed, sense, spikes, camo, temp, metab, diet, aqua, limbs, hue
 const EFF := {
@@ -140,6 +141,33 @@ static func founder(rng: RandomNumberGenerator) -> String:
 				and g["metab"] > .25 and g["metab"] < .75 and g["limbs"].size() >= 1:
 			return s
 	return junk(rng, 5) + random_gene(rng, 7) + random_gene(rng, 7)
+
+
+## One CRISPR edit at base p: "rep" replaces it with b, "ins" inserts b after it, "del" cuts it.
+## Returns {dna, cursor, msg, done}; when done is false the edit was refused and dna is unchanged.
+static func edit(dna: String, kind: String, p: int, b: String, rng: RandomNumberGenerator) -> Dictionary:
+	var d := dna
+	var cursor := p
+	match kind:
+		"rep":
+			d = d.substr(0, p) + b + d.substr(p + 1)
+		"ins":
+			d = d.substr(0, p + 1) + b + d.substr(p + 1)
+			cursor = p + 1
+		"del":
+			if d.length() <= 30:
+				return {"dna": dna, "cursor": p, "msg": "Genome too short to cut.", "done": false}
+			d = d.substr(0, p) + d.substr(p + 1)
+			cursor = mini(p, d.length() - 1)
+	var msg := "Edit made."
+	if rng.randf() < OFF_TARGET:
+		var q := rng.randi() % d.length()
+		var nb := random_base(rng)
+		while nb == d[q]:
+			nb = random_base(rng)
+		d = d.substr(0, q) + nb + d.substr(q + 1)
+		msg = "Off-target cut at base %d." % (q + 1)
+	return {"dna": d, "cursor": cursor, "msg": msg, "done": true}
 
 
 static func _poisson(rng: RandomNumberGenerator, l: float) -> int:
