@@ -15,6 +15,19 @@ var legs: MultiMesh
 var food_mm: MultiMesh
 var pred_mm: MultiMesh
 
+var _water: MeshInstance3D
+var _sun: DirectionalLight3D
+var _env: Environment
+var _sky_mat: ProceduralSkyMaterial
+var _sun_color := Color(1.0, 0.96, 0.9) # resting colours, tinted by the climate each frame
+var _horizon := Color(0.66, 0.76, 0.84)
+var _terrain_arrays: Array = [] # mesh arrays kept so the climate can recolour without a rebuild
+var _vert_cell := PackedInt32Array()
+var _built_version := -1
+var _meteor_fx: Array = [] # [fireball, warning column] per incoming meteor
+var _flashes: Array = [] # [MeshInstance3D, seconds since impact]
+var _time := 0.0
+
 
 func setup(w: World) -> void:
 	world = w
@@ -36,6 +49,26 @@ func setup(w: World) -> void:
 	world.terrain_changed.connect(build_terrain)
 
 
+## Per-frame planet state: sea level, climate tint and meteors.
+func update_planet(delta: float) -> void:
+	_time += delta
+	_water.position.y = water_y()
+	var heat := clampf((world.temp - world.climate_base) / 0.28, -1.0, 1.0)
+	var cold_tint := Color(0.75, 0.86, 1.0)
+	var hot_tint := Color(1.0, 0.8, 0.55)
+	_sun.light_color = _sun_color.lerp(cold_tint, maxf(0.0, -heat) * 0.4).lerp(hot_tint, maxf(0.0, heat) * 0.4)
+	var horizon := _horizon.lerp(cold_tint, maxf(0.0, -heat) * 0.3).lerp(hot_tint, maxf(0.0, heat) * 0.3)
+	_sky_mat.sky_horizon_color = horizon
+	_sky_mat.ground_horizon_color = horizon
+	_env.fog_light_color = horizon
+	_update_meteors(delta)
+
+
+## Height of the sea surface, which rises and falls with the climate.
+func water_y() -> float:
+	return (world.sea_level - World.SEA) * RELIEF
+
+
 func ground_y(p: Vector2) -> float:
 	return (world.elev_at(p) - World.SEA) * RELIEF
 
@@ -44,7 +77,8 @@ func ground_y(p: Vector2) -> float:
 ## or floating at the surface when the ground there is under water.
 func rest_point(p: Vector2, lift: float) -> Vector3:
 	var y := ground_y(p)
-	return Vector3(p.x * S, y + lift if y > 0.0 else 0.0, p.y * S)
+	var w := water_y()
+	return Vector3(p.x * S, y + lift if y > w else w, p.y * S)
 
 
 static func body_color(g: Dictionary) -> Color:
@@ -66,7 +100,13 @@ static func leg_transform(at: Vector3, rad: float, a: float, length: float) -> T
 
 # ---------------------------------------------------------------- terrain
 
+## Called whenever the world repaints: a full rebuild for new ground, otherwise only the
+## vertex colours change (climate, sea level, craters).
 func build_terrain() -> void:
+	if world.terrain_version == _built_version:
+		_recolor_terrain()
+		return
+	_built_version = world.terrain_version
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for j in World.GH:
@@ -84,12 +124,33 @@ func build_terrain() -> void:
 			st.add_index(k + World.GW + 1)
 			st.add_index(k + World.GW)
 	st.generate_normals()
-	terrain.mesh = st.commit()
+	var mesh := st.commit()
+	terrain.mesh = mesh
+	_terrain_arrays = mesh.surface_get_arrays(0)
+	# Map each vertex back to its cell from its position, whatever order SurfaceTool kept.
+	var verts: PackedVector3Array = _terrain_arrays[Mesh.ARRAY_VERTEX]
+	_vert_cell.resize(verts.size())
+	for v in verts.size():
+		var i := clampi(int(verts[v].x / (World.CS * S)), 0, World.GW - 1)
+		var j := clampi(int(verts[v].z / (World.CS * S)), 0, World.GH - 1)
+		_vert_cell[v] = j * World.GW + i
+
+
+func _recolor_terrain() -> void:
+	var colors := PackedColorArray()
+	colors.resize(_vert_cell.size())
+	for v in _vert_cell.size():
+		colors[v] = world.terrain_color(_vert_cell[v])
+	_terrain_arrays[Mesh.ARRAY_COLOR] = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _terrain_arrays)
+	terrain.mesh = mesh
 
 
 func _build_water() -> void:
 	var size := Vector2(World.WW, World.WH) * S
 	var water := MeshInstance3D.new()
+	_water = water
 	var plane := PlaneMesh.new()
 	plane.size = size * 4.0 # runs out to the horizon
 	water.mesh = plane
@@ -111,6 +172,7 @@ func _build_water() -> void:
 
 func _build_environment() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
+	_sky_mat = sky_mat
 	sky_mat.sky_top_color = Color(0.2, 0.4, 0.68)
 	sky_mat.sky_horizon_color = Color(0.66, 0.76, 0.84)
 	sky_mat.ground_horizon_color = Color(0.66, 0.76, 0.84)
@@ -118,6 +180,7 @@ func _build_environment() -> void:
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	var env := Environment.new()
+	_env = env
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -130,6 +193,7 @@ func _build_environment() -> void:
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
+	_sun = sun
 	sun.rotation_degrees = Vector3(-52, -35, 0)
 	sun.light_energy = 1.1
 	sun.shadow_enabled = true
@@ -192,6 +256,69 @@ func update_life(skip: World.Creature) -> void:
 		pred_mm.set_instance_color(np, Color("7a3a44") if p.stun > 0 else Color("ff5d73"))
 		np += 1
 	pred_mm.visible_instance_count = np
+
+
+# ---------------------------------------------------------------- meteors
+
+## A falling fireball and a red column marking where it will land, per incoming meteor.
+func _update_meteors(delta: float) -> void:
+	while _meteor_fx.size() < world.incoming.size():
+		var ball := MeshInstance3D.new()
+		ball.mesh = sphere_mesh(2.2)
+		ball.material_override = _glow(Color(1.0, 0.62, 0.25), 1.0)
+		add_child(ball)
+		var column := MeshInstance3D.new()
+		column.mesh = cylinder_mesh(World.METEOR_R * S, World.METEOR_R * S, 90.0)
+		column.material_override = _glow(Color(1.0, 0.12, 0.08), 0.25)
+		add_child(column)
+		_meteor_fx.append([ball, column])
+	for i in _meteor_fx.size():
+		var fx: Array = _meteor_fx[i]
+		var on := i < world.incoming.size()
+		fx[0].visible = on
+		fx[1].visible = on
+		if not on:
+			continue
+		var p: Vector2 = world.incoming[i][0]
+		var left: float = world.incoming[i][1]
+		var ground := rest_point(p, 0.0)
+		# each meteor comes in at a slant from its own direction (derived from where it lands)
+		var a := fposmod(p.x * 0.37 + p.y * 0.11, TAU)
+		var h := left * 0.55
+		fx[0].position = ground + Vector3.UP * h + Vector3(cos(a), 0.0, sin(a)) * h * 0.8
+		fx[1].position = ground + Vector3.UP * 44.0
+		fx[1].material_override.albedo_color.a = 0.22 + 0.1 * sin(_time * 8.0)
+	for i in range(_flashes.size() - 1, -1, -1):
+		var f: Array = _flashes[i]
+		f[1] += delta
+		var t: float = f[1] / 1.4
+		if t >= 1.0:
+			f[0].queue_free()
+			_flashes.remove_at(i)
+			continue
+		f[0].scale = Vector3.ONE * (1.0 + t * World.METEOR_R * S * 1.1)
+		f[0].material_override.albedo_color.a = 0.6 * (1.0 - t) * (1.0 - t)
+
+
+## The blast when a meteor lands at p.
+func flash(p: Vector2) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = sphere_mesh(1.0)
+	mi.material_override = _glow(Color(1.0, 0.75, 0.45), 0.6)
+	mi.position = rest_point(p, 0.0)
+	add_child(mi)
+	_flashes.append([mi, 0.0])
+
+
+static func _glow(c: Color, alpha: float) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.disable_fog = true # warnings and fireballs must read at any distance
+	m.albedo_color = Color(c, alpha)
+	if alpha < 1.0:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
 
 
 # ---------------------------------------------------------------- meshes

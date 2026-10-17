@@ -27,8 +27,10 @@ var _model_dna := ""
 var _focus := Vector3.ZERO # what the camera looks at; stays put after your line ends
 var _cam_placed := false
 var _messages: Array = [] # [text, seconds left]
+var _shake := 0.0
 
 var stats_label: Label
+var climate_label: Label
 var vitals_label: Label
 var energy_bar: ProgressBar
 var age_bar: ProgressBar
@@ -54,6 +56,9 @@ func _ready() -> void:
 	world.player_died.connect(_on_player_died)
 	world.extinct.connect(_on_extinct)
 	world.charge_tick.connect(func(): charges = mini(MAX_CHARGES, charges + 1))
+	world.planet_event.connect(_say)
+	world.meteor_incoming.connect(_on_meteor_incoming)
+	world.meteor_impact.connect(_on_meteor_impact)
 	_build_hud()
 	_start(Genome.founder(world.rng))
 
@@ -82,6 +87,34 @@ func _on_extinct() -> void:
 	_say("All life on the planet is gone. Press Enter to seed it again.")
 
 
+func _on_meteor_incoming(p: Vector2) -> void:
+	var me := world.player
+	if me == null:
+		_say("A meteor streaks across the sky.")
+		return
+	var d := p - me.pos
+	var metres := d.length() * Planet3D.S
+	if metres < World.METEOR_R * Planet3D.S:
+		_say("A meteor is coming down right on top of you! Get out of the red zone!")
+	else:
+		_say("A meteor is falling %d m to the %s." % [int(metres), _compass(d)])
+
+
+func _on_meteor_impact(p: Vector2, killed: int) -> void:
+	planet.flash(p)
+	var near := world.player != null and world.player.pos.distance_to(p) < World.METEOR_R * 4.0
+	if near:
+		_shake = 1.0
+	if killed > 0:
+		_say("Impact! %d creatures died in the blast." % killed)
+
+
+## Compass direction of a sim-space offset (north is -y, i.e. -Z in 3D).
+static func _compass(d: Vector2) -> String:
+	var names := ["east", "south-east", "south", "south-west", "west", "north-west", "north", "north-east"]
+	return names[posmod(roundi(d.angle() / (TAU / 8.0)), 8)]
+
+
 func _say(text: String) -> void:
 	_messages.append([text, 7.0])
 	if _messages.size() > 4:
@@ -105,6 +138,7 @@ func _process(delta: float) -> void:
 		model.position = planet.rest_point(p.pos, model.stand)
 		model.animate(p.vel, delta * speed)
 		_focus = model.position
+	planet.update_planet(delta)
 	_update_camera(delta)
 	_update_hud(delta)
 
@@ -136,6 +170,9 @@ func _update_camera(delta: float) -> void:
 		_cam_placed = true
 	if cam.position.distance_squared_to(target) > 0.0001:
 		cam.look_at(target, Vector3.UP)
+	if _shake > 0.0:
+		cam.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * _shake * 0.6
+		_shake = maxf(0.0, _shake - delta * 1.5)
 
 
 # ---------------------------------------------------------------- input
@@ -233,6 +270,13 @@ func _build_hud() -> void:
 	layer.add_child(root)
 
 	stats_label = _label(root, Vector2(14, 10))
+	climate_label = Label.new()
+	climate_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	climate_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	climate_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	climate_label.offset_right = -14
+	climate_label.offset_top = 10
+	root.add_child(climate_label)
 	vitals_label = _label(root, Vector2(14, 36))
 	energy_bar = _bar(root, Vector2(14, 64), "Energy", Color("6df2a0"))
 	age_bar = _bar(root, Vector2(14, 88), "Age", Color("f2c36d"))
@@ -313,9 +357,30 @@ func _bar(parent: Control, pos: Vector2, title: String, fill: Color) -> Progress
 	return bar
 
 
+## The most urgent thing the player should know about their surroundings, or "".
+func _warning(p: World.Creature) -> String:
+	if world.player_blocked != "":
+		return world.player_blocked
+	for m in world.incoming:
+		if p.pos.distance_to(m[0]) < World.METEOR_R:
+			return "Meteor incoming! Get out of the red zone!"
+	if world.too_wet(p.g, world.is_wet(p.pos)):
+		return "You are drowning! Get to land." if p.g["aqua"] < 0.35 else "You are drying out! Get to water."
+	var mismatch: float = p.g["temp"] - world.temp_at(p.pos)
+	if mismatch > 0.3:
+		return "It is too cold here for your body."
+	if mismatch < -0.3:
+		return "It is too hot here for your body."
+	return ""
+
+
 func _update_hud(delta: float) -> void:
 	stats_label.text = "Population %d   Species %d   World age %.1f kyr   %s" % [
 		world.creatures.size(), world.species, world.tick / 100.0, "Paused" if speed == 0 else "Speed %dx" % speed]
+	var trend := clampf(world.climate_base + World.ERAS[world.era]["temp"], 0.0, 1.0) - world.temp
+	climate_label.text = "%s%s\n%d °C   sea level %+.1f m" % [
+		World.ERAS[world.era]["name"], "  (cooling)" if trend < -0.02 else ("  (warming)" if trend > 0.02 else ""),
+		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * Planet3D.RELIEF]
 	var p := world.player
 	(energy_bar.get_parent() as Control).visible = p != null
 	(age_bar.get_parent() as Control).visible = p != null
@@ -326,12 +391,9 @@ func _update_hud(delta: float) -> void:
 		energy_bar.value = p.e
 		age_bar.max_value = World.LIFESPAN
 		age_bar.value = p.age
-		if world.player_blocked != "":
-			prompt_label.text = world.player_blocked
-		elif p.e > need:
+		prompt_label.text = _warning(p)
+		if prompt_label.text == "" and p.e > need:
 			prompt_label.text = "R  lay an offspring"
-		else:
-			prompt_label.text = ""
 	else:
 		vitals_label.text = "Your lineage has ended." if game_over else ""
 		prompt_label.text = "Enter  start a new lineage" if game_over else ""

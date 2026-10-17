@@ -64,5 +64,15 @@ func _init() -> void:
 	m._key(_k(KEY_ENTER))
 	ok = ok and w.player != null and not m.game_over
 	await process_frame
+
+	# a warming climate raises the 3D sea; a meteor aimed at the player is announced and lands
+	w.temp = 0.8
+	w.meteor_at(w.player.pos, 20)
+	ok = ok and m._messages.any(func(msg): return "red zone" in msg[0])
+	for _i in 30:
+		await process_frame
+	print("sea surface at %.2f m, %d flashes, %d craters" % [m.planet.water_y(), m.planet._flashes.size(), w.craters.size()])
+	ok = ok and m.planet.water_y() > 0.5 and m.planet._water.position.y > 0.5
+	ok = ok and m.planet._flashes.size() > 0 and w.craters.size() > 0
 	print("PASS" if ok else "FAIL")
 	quit(0 if ok else 1)

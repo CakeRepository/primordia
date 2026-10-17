@@ -29,6 +29,11 @@ The original top-down god view (levers, meteors, release your DNA onto the map) 
 | 1 / 2 / 3, P | Speed 1x / 2x / 4x, pause |
 
 You live about a minute at 1x. Food is eaten on contact; carnivores also bite smaller creatures they touch.
+
+The planet changes too. Climate eras (ice age to hothouse) last one to two lifetimes; temperature drifts toward
+each era's target, the sea falls or rises with it (about 2.4 m either way, enough to open or drown land bridges),
+snow spreads or retreats, and cold ground grows less food. Meteors are sighted a few seconds before they land
+(a red column marks the blast zone) and scorch the ground for a while; solar storms raise mutation rates.
 Gene lab edits apply to offspring you lay afterwards, and every edit has an 8% chance of an off-target
 mutation. Charges refill slowly while the world runs.
 
@@ -73,8 +78,6 @@ godot --headless --path . -s res://scripts/test_main3d.gd
 
 ## Known gaps and next steps
 
-- The planet itself does not change yet beyond a slow seasonal cycle: climate epochs, sea-level change and
-  disasters would make the world evolve as well as its life.
 - Other creatures are simple MultiMesh shapes (body, legs, optional spikes); only the player gets a full model.
 - Aquatic and carnivorous lineages can evolve but no native species starts as one.
 - Speed: about 100 ticks/s at 600 creatures, so 4x is the practical ceiling. Candidates: spatial hashing for
