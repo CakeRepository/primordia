@@ -83,6 +83,7 @@ mutation. Charges refill slowly while the world runs.
 | Click a creature | Inspect it. `L` loads its DNA into the lab, `W` writes the lab DNA back |
 | Drag / mouse wheel | Pan / zoom |
 | 1 / 2 / 3, P | Speed 1x / 2x / 4x, pause |
+| Esc | Leave drop mode, otherwise return to the title screen |
 
 ## How it works
 

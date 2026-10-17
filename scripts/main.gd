@@ -257,7 +257,10 @@ func _key(e: InputEvent) -> void:
 			else:
 				drop_mode = not drop_mode
 		KEY_ESCAPE:
-			drop_mode = false
+			if drop_mode:
+				drop_mode = false
+			else:
+				get_tree().change_scene_to_file("res://scenes/menu.tscn")
 		KEY_L:
 			if world.selected != null:
 				lab_dna = world.selected.dna
