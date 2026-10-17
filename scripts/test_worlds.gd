@@ -30,7 +30,7 @@ func _init() -> void:
 		var probe := RandomNumberGenerator.new()
 		probe.seed = s
 		var viable := Genome.find_founder(probe, 3000) != ""
-		w.populate(Genome.founder(w.rng))
+		w.populate()
 		for _i in 1500:
 			w.step()
 		var pl := w.planet

@@ -3,7 +3,9 @@
 Evolution game: the player is a creature on a 3D planet, built from its DNA. It evolves across generations
 (you continue as your descendant) while native species evolve around it. A CRISPR-style gene lab edits the germline.
 
-- Run: `godot --path .`
+- Run: `godot --path .` (title menu). Dedicated server: `godot --headless --path . -- --server --port 24565 --seed 42`.
+- Multiplayer: `Session` is authoritative on the server; never change world state on a client. Client
+  actions go through RPCs that the server must validate. The Session node path must match on all peers.
 - Verify changes with the headless tests listed in README.md (all of them must print PASS).
 - Worlds come from `PlanetGen` seeds. `Genome`'s genetic code is global (one world per process), so build a
   world through `World.planet`/`use_planet`, which installs its biochemistry.

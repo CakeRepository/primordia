@@ -1,34 +1,38 @@
 extends Node3D
-## The 3D game. You play one creature on a planet that keeps evolving around you. Your body
-## is built from your DNA; you eat, dodge predators and lay offspring, and when you die you
-## carry on as your nearest descendant. The gene lab (Tab) edits your germline, the DNA your
-## offspring inherit, so edits show up a generation later alongside natural mutations.
+## The 3D game view. You play one creature on a living alien planet: your body is built from
+## your DNA; you eat, dodge predators and lay offspring, and when you die you carry on as your
+## nearest descendant. The gene lab (Tab) edits your germline, the DNA your offspring inherit.
+## A Session runs the world (in this process for solo, host and dedicated server; elsewhere for
+## a client); this node draws it and handles input and the HUD. A dedicated server builds no view.
 
-const MAX_CHARGES := 12
-const HELP := "WASD move   Right-drag look   Wheel zoom   R lay offspring   Tab gene lab   1/2/3 speed   P pause"
+const HELP := "WASD move   Right-drag look   Wheel zoom   R lay offspring   Tab gene lab   1/2/3 speed   P pause   Esc leave"
+const MENU_SCENE := "res://scenes/menu.tscn"
 
-var world: World
+var session: Session
+var world: World # session.world once it exists
 var planet: Planet3D
 var model: CreatureModel
 var cam: Camera3D
 
-var world_seed := 0 # the planet to build; 0 picks a random one
-var germline := ""
-var charges := MAX_CHARGES
+## Overrides for the Launch autoload (tests and tools): mode, seed, port, address, player_name, server_name.
+var config := {}
+var world_seed := 0 # shortcut for config["seed"]
+var dedicated := false
+
 var cursor := 0
 var lab_open := false
-var speed := 1
-var status := "Edits change your germline: the DNA your offspring inherit."
-var game_over := false
-
 var yaw := 0.7
 var pitch := 0.45
 var zoom := 1.0
 var _model_dna := ""
-var _focus := Vector3.ZERO # what the camera looks at; stays put after your line ends
+var _focus := Vector3.ZERO # what the camera looks at; stays put while you have no body
 var _cam_placed := false
 var _messages: Array = [] # [text, seconds left]
 var _shake := 0.0
+var _leaving := false # the "leave this world?" prompt is up
+var _lost := "" # why the connection to the server ended
+var _tags := {} # peer -> Label3D over other players' creatures
+var _status_t := 0.0
 
 var stats_label: Label
 var climate_label: Label
@@ -37,15 +41,76 @@ var energy_bar: ProgressBar
 var age_bar: ProgressBar
 var prompt_label: Label
 var log_label: Label
+var center_label: Label
 var lab_panel: PanelContainer
 var lab_text: RichTextLabel
 
 
 func _ready() -> void:
-	world = World.new()
-	world.visible = false # its 2D drawing is for the top-down view only
-	world.planet = PlanetGen.new(world_seed if world_seed != 0 else randi())
-	add_child(world)
+	if world_seed != 0:
+		config["seed"] = world_seed
+	var mode: String = _cfg("mode", "solo")
+	dedicated = mode == "dedicated"
+	if dedicated or DisplayServer.get_name() == "headless":
+		Engine.max_fps = 60 # nothing to draw: do not spin the CPU
+	session = Session.new()
+	session.name = "Session"
+	add_child(session)
+	session.world_ready.connect(_on_world_ready)
+	session.said.connect(_say)
+	session.meteor_seen.connect(_on_meteor_seen)
+	session.impacted.connect(_on_impact)
+	session.died.connect(_on_died)
+	session.reborn.connect(func(): _cam_placed = false)
+	session.lab_changed.connect(func():
+		if session.cursor_hint >= 0:
+			cursor = session.cursor_hint
+		cursor = clampi(cursor, 0, maxi(0, session.germline.length() - 1)))
+	session.disconnected.connect(func(reason):
+		_lost = reason
+		_say(reason))
+	if not dedicated:
+		_build_hud()
+	var seed: int = _cfg("seed", 0)
+	var port: int = _cfg("port", Session.DEFAULT_PORT)
+	var who: String = _cfg("player_name", "Player")
+	var err := OK
+	match mode:
+		"dedicated":
+			err = session.start_dedicated(seed, port, _cfg("server_name", ""))
+			if err == OK:
+				var pl := session.world.planet
+				print("[server] %s on port %d. Planet %s (seed %d): %s." % [session.server_name, port, pl.name, pl.seed, pl.describe()])
+				print("[server] Players join with: godot --path . -- --join <this machine's address>:%d" % port)
+		"host":
+			err = session.start_host(seed, who, port)
+		"join":
+			err = session.start_client(_cfg("address", "127.0.0.1"), port, who)
+			if err == OK:
+				_say("Connecting to %s:%d..." % [_cfg("address", "127.0.0.1"), port])
+		_:
+			session.start_solo(seed, who)
+	if err != OK:
+		var why := "Could not open port %d (%s). Is another server running there?" % [port, error_string(err)] \
+			if mode != "join" else "Could not start a connection (%s)." % error_string(err)
+		push_error(why)
+		_lost = why
+		_say(why)
+		if dedicated:
+			get_tree().quit(1)
+
+
+func _cfg(key: String, default: Variant) -> Variant:
+	if config.has(key):
+		return config[key]
+	var launch := get_node_or_null("/root/Launch")
+	return launch.get(key) if launch != null else default
+
+
+func _on_world_ready() -> void:
+	world = session.world
+	if dedicated:
+		return
 	planet = Planet3D.new()
 	add_child(planet)
 	planet.setup(world)
@@ -55,42 +120,17 @@ func _ready() -> void:
 	cam.far = 900.0
 	add_child(cam)
 	cam.current = true
-	world.player_died.connect(_on_player_died)
-	world.extinct.connect(_on_extinct)
-	world.charge_tick.connect(func(): charges = mini(MAX_CHARGES, charges + 1))
-	world.planet_event.connect(_say)
-	world.meteor_incoming.connect(_on_meteor_incoming)
-	world.meteor_impact.connect(_on_meteor_impact)
-	_build_hud()
-	_start(Genome.founder(world.rng))
 
 
-func _start(dna: String) -> void:
-	germline = dna
-	cursor = 0
-	game_over = false
-	_cam_placed = false
-	world.populate(dna)
-	_say("You hatch on a living planet. Eat, stay alive, and press R to lay offspring.")
+func _on_died(cause: String, heir_gen: int) -> void:
+	if heir_gen < 0:
+		_say("You %s. Your lineage has ended. Press Enter to start a new one." % cause)
+	else:
+		_say("You %s. You live on as your descendant, generation %d." % [cause, heir_gen])
 
 
-func _on_player_died(old: World.Creature, heir: World.Creature) -> void:
-	if heir == null:
-		game_over = true
-		_say("You %s. Your lineage has ended. Press Enter to start a new one." % old.cause)
-		return
-	germline = heir.dna
-	cursor = clampi(cursor, 0, germline.length() - 1)
-	_say("You %s. You live on as your descendant, generation %d." % [old.cause, heir.gen])
-
-
-func _on_extinct() -> void:
-	game_over = true
-	_say("All life on the planet is gone. Press Enter to seed it again.")
-
-
-func _on_meteor_incoming(p: Vector2) -> void:
-	var me := world.player
+func _on_meteor_seen(p: Vector2) -> void:
+	var me := session.my_creature()
 	if me == null:
 		_say("A meteor streaks across the sky.")
 		return
@@ -102,10 +142,11 @@ func _on_meteor_incoming(p: Vector2) -> void:
 		_say("A meteor is falling %d m to the %s." % [int(metres), _compass(d)])
 
 
-func _on_meteor_impact(p: Vector2, killed: int) -> void:
-	planet.flash(p)
-	var near := world.player != null and world.player.pos.distance_to(p) < World.METEOR_R * 4.0
-	if near:
+func _on_impact(p: Vector2, killed: int) -> void:
+	if planet != null:
+		planet.flash(p)
+	var me := session.my_creature()
+	if me != null and me.pos.distance_to(p) < World.METEOR_R * 4.0:
 		_shake = 1.0
 	if killed > 0:
 		_say("Impact! %d creatures died in the blast." % killed)
@@ -118,6 +159,9 @@ static func _compass(d: Vector2) -> String:
 
 
 func _say(text: String) -> void:
+	if dedicated:
+		print("[server] ", text)
+		return
 	_messages.append([text, 7.0])
 	if _messages.size() > 4:
 		_messages.pop_front()
@@ -126,11 +170,19 @@ func _say(text: String) -> void:
 # ---------------------------------------------------------------- frame
 
 func _process(delta: float) -> void:
-	world.player_dir = _move_input() if world.player != null and not lab_open else Vector2.ZERO
-	if world.running:
-		for _i in speed:
-			world.step()
-	var p := world.player
+	if dedicated:
+		_status_t += delta
+		if _status_t >= 60.0 and world != null:
+			_status_t = 0.0
+			print("[server] %s: population %d, %d species, %s, %d player%s" % [world.planet.name,
+				world.creatures.size(), world.species, World.ERAS[world.era]["name"], session.names.size(),
+				"" if session.names.size() == 1 else "s"])
+		return
+	if world == null:
+		_update_hud(delta)
+		return
+	var p := session.my_creature()
+	session.send_input(_move_input() if p != null and not lab_open and not _leaving else Vector2.ZERO)
 	planet.update_life(p)
 	model.visible = p != null
 	if p != null:
@@ -138,9 +190,10 @@ func _process(delta: float) -> void:
 			_model_dna = p.dna
 			model.build(p.g, p.r * Planet3D.S, world.planet.body_shape)
 		model.position = planet.rest_point(p.pos, model.stand)
-		model.animate(p.vel, delta * speed)
+		model.animate(p.vel, delta * session.speed)
 		_focus = model.position
 	planet.update_planet(delta)
+	_update_tags()
 	_update_camera(delta)
 	_update_hud(delta)
 
@@ -159,7 +212,7 @@ func _held(a: Key, b: Key) -> bool:
 
 
 func _update_camera(delta: float) -> void:
-	var reach := model.rad if world.player != null else 1.0
+	var reach := model.rad if session.my_creature() != null else 1.0
 	var target := _focus + Vector3(0.0, reach * 0.6, 0.0)
 	var dist := (3.0 + reach * 7.0) * zoom
 	var want := target + Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * dist
@@ -183,6 +236,31 @@ func _update_camera(delta: float) -> void:
 		_shake = maxf(0.0, _shake - delta * 1.5)
 
 
+## Name tags over the creatures other players are playing.
+func _update_tags() -> void:
+	var live := {}
+	for c in world.creatures:
+		if c.driver != 0 and c.driver != session.me:
+			live[c.driver] = c
+	for peer in _tags.keys():
+		if not live.has(peer):
+			_tags[peer].queue_free()
+			_tags.erase(peer)
+	for peer in live:
+		if not _tags.has(peer):
+			var tag := Label3D.new()
+			tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			tag.no_depth_test = true
+			tag.font_size = 48
+			tag.outline_size = 12
+			tag.pixel_size = 0.01
+			add_child(tag)
+			_tags[peer] = tag
+		var c: World.Creature = live[peer]
+		_tags[peer].text = session.names.get(peer, "?")
+		_tags[peer].position = planet.rest_point(c.pos, c.r * Planet3D.S) + Vector3.UP * (c.r * Planet3D.S * 2.0 + 0.8)
+
+
 # ---------------------------------------------------------------- input
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -202,6 +280,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _key(k: InputEventKey) -> void:
+	if dedicated:
+		return
+	if _lost != "" or _leaving:
+		if k.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+			_leave()
+		elif k.keycode == KEY_ESCAPE and _lost == "":
+			_leaving = false
+		return
 	if k.keycode == KEY_TAB or (k.keycode == KEY_ESCAPE and lab_open):
 		lab_open = not lab_open
 		lab_panel.visible = lab_open
@@ -209,19 +295,17 @@ func _key(k: InputEventKey) -> void:
 	if lab_open and _lab_key(k):
 		return
 	match k.keycode:
+		KEY_ESCAPE:
+			_leaving = true
 		KEY_R:
-			_reproduce()
+			session.reproduce()
 		KEY_ENTER, KEY_KP_ENTER:
-			if game_over:
-				_start(germline)
-		KEY_1:
-			speed = 1
-		KEY_2:
-			speed = 2
-		KEY_3:
-			speed = 4
-		KEY_P:
-			speed = 0 if speed > 0 else 1
+			if session.game_over:
+				session.restart()
+		KEY_1, KEY_2, KEY_3, KEY_P:
+			var s: int = {KEY_1: 1, KEY_2: 2, KEY_3: 4}.get(k.keycode, 0 if session.speed > 0 else 1)
+			if not session.set_speed(s):
+				_say("Only the host can change the speed: it is everyone's clock.")
 
 
 ## Gene lab keys while it is open. Returns false for keys it does not use.
@@ -232,36 +316,18 @@ func _lab_key(k: InputEventKey) -> bool:
 		KEY_RIGHT:
 			cursor += 10 if k.shift_pressed else 1
 		KEY_DELETE, KEY_BACKSPACE:
-			_edit("del")
+			session.edit("del", cursor, "")
 		KEY_A, KEY_T, KEY_G, KEY_C:
-			_edit("ins" if k.shift_pressed else "rep", OS.get_keycode_string(k.keycode))
+			session.edit("ins" if k.shift_pressed else "rep", cursor, OS.get_keycode_string(k.keycode))
 		_:
 			return false
-	cursor = clampi(cursor, 0, maxi(0, germline.length() - 1))
+	cursor = clampi(cursor, 0, maxi(0, session.germline.length() - 1))
 	return true
 
 
-func _edit(kind: String, b := "") -> void:
-	if charges < 1:
-		status = "No Cas9 charges left. They refill slowly."
-		return
-	var r := Genome.edit(germline, kind, cursor, b, world.rng)
-	status = r["msg"]
-	if r["done"]:
-		charges -= 1
-		germline = r["dna"]
-		cursor = r["cursor"]
-
-
-func _reproduce() -> void:
-	var p := world.player
-	if p == null:
-		return
-	var kid := world.player_reproduce(germline)
-	if kid == null:
-		_say("Not enough energy to lay offspring yet (%d of %d). Eat more." % [int(p.e), int(world.breed_energy(p)) + 1])
-	else:
-		_say("You laid an offspring. It carries your germline, generation %d." % kid.gen)
+func _leave() -> void:
+	session.shutdown()
+	get_tree().change_scene_to_file(MENU_SCENE)
 
 
 # ---------------------------------------------------------------- HUD
@@ -295,6 +361,14 @@ func _build_hud() -> void:
 	log_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	log_label.offset_top = 120
 	root.add_child(log_label)
+
+	center_label = Label.new()
+	center_label.set_anchors_preset(Control.PRESET_CENTER)
+	center_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	center_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	center_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	center_label.add_theme_font_size_override("font_size", 24)
+	root.add_child(center_label)
 
 	prompt_label = Label.new()
 	prompt_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
@@ -367,8 +441,8 @@ func _bar(parent: Control, pos: Vector2, title: String, fill: Color) -> Progress
 
 ## The most urgent thing the player should know about their surroundings, or "".
 func _warning(p: World.Creature) -> String:
-	if world.player_blocked != "":
-		return world.player_blocked
+	if session.my_blocked != "":
+		return session.my_blocked
 	for m in world.incoming:
 		if p.pos.distance_to(m[0]) < World.METEOR_R:
 			return "Meteor incoming! Get out of the red zone!"
@@ -383,18 +457,40 @@ func _warning(p: World.Creature) -> String:
 
 
 func _update_hud(delta: float) -> void:
-	stats_label.text = "Population %d   Species %d   World age %.1f kyr   %s" % [
-		world.creatures.size(), world.species, world.tick / 100.0, "Paused" if speed == 0 else "Speed %dx" % speed]
-	var trend := clampf(world.climate_base + World.ERAS[world.era]["temp"], 0.0, 1.0) - world.temp
-	climate_label.text = "%s  (seed %d)\n%s\n%s%s\n%d °C   sea level %+.1f m" % [
-		world.planet.name, world.planet.seed, world.planet.describe(), World.ERAS[world.era]["name"], "  (cooling)" if trend < -0.02 else ("  (warming)" if trend > 0.02 else ""),
-		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * planet.relief]
-	var p := world.player
+	for m in _messages:
+		m[1] -= delta
+	_messages = _messages.filter(func(m): return m[1] > 0.0)
+	log_label.text = "\n".join(_messages.map(func(m): return m[0]))
+	if _lost != "":
+		center_label.text = "%s\nPress Enter to return to the menu." % _lost
+	elif _leaving:
+		center_label.text = "Leave this world?\nEnter to leave, Esc to stay."
+	elif world == null:
+		center_label.text = "Waiting for the server..."
+	else:
+		center_label.text = ""
+	var p: World.Creature = session.my_creature() if world != null else null
 	(energy_bar.get_parent() as Control).visible = p != null
 	(age_bar.get_parent() as Control).visible = p != null
+	if world == null:
+		stats_label.text = ""
+		climate_label.text = ""
+		vitals_label.text = ""
+		prompt_label.text = ""
+		return
+	var online := "" if session.names.size() <= 1 else "   %d players" % session.names.size()
+	stats_label.text = "Population %d   Species %d   World age %.1f kyr   %s%s" % [
+		world.creatures.size(), world.species, world.tick / 100.0,
+		"Paused" if session.speed == 0 else "Speed %dx" % session.speed, online]
+	var trend := clampf(world.climate_base + World.ERAS[world.era]["temp"], 0.0, 1.0) - world.temp
+	climate_label.text = "%s%s  (seed %d)\n%s\n%s%s\n%d °C   sea level %+.1f m" % [
+		session.server_name + ": " if session.server_name != "" else "", world.planet.name, world.planet.seed,
+		world.planet.describe(), World.ERAS[world.era]["name"],
+		"  (cooling)" if trend < -0.02 else ("  (warming)" if trend > 0.02 else ""),
+		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * planet.relief]
 	if p != null:
 		var need := world.breed_energy(p)
-		vitals_label.text = "You: generation %d   %d of your line alive" % [p.gen, world.lineage_count()]
+		vitals_label.text = "You: generation %d   %d of your line alive" % [p.gen, session.my_line]
 		energy_bar.max_value = need
 		energy_bar.value = p.e
 		age_bar.max_value = World.LIFESPAN
@@ -403,13 +499,9 @@ func _update_hud(delta: float) -> void:
 		if prompt_label.text == "" and p.e > need:
 			prompt_label.text = "R  lay an offspring"
 	else:
-		vitals_label.text = "Your lineage has ended." if game_over else ""
-		prompt_label.text = "Enter  start a new lineage" if game_over else ""
-	for m in _messages:
-		m[1] -= delta
-	_messages = _messages.filter(func(m): return m[1] > 0.0)
-	log_label.text = "\n".join(_messages.map(func(m): return m[0]))
+		vitals_label.text = "Your lineage has ended." if session.game_over else ""
+		prompt_label.text = "Enter  start a new lineage" if session.game_over else ""
 	if lab_open:
 		var header := "[b]GENE LAB[/b]  your germline, the DNA your offspring inherit  |  base %d of %d  |  %d / %d Cas9 charges" % [
-			cursor + 1, germline.length(), charges, MAX_CHARGES]
-		lab_text.text = GeneLab.render(germline, cursor, maxi(20, int(lab_text.size.x / 11.0)), header, status)
+			cursor + 1, session.germline.length(), session.charges, Session.MAX_CHARGES]
+		lab_text.text = GeneLab.render(session.germline, cursor, maxi(20, int(lab_text.size.x / 11.0)), header, session.status)

@@ -25,7 +25,7 @@ func _init() -> void:
 	root.add_child(lp)
 	await process_frame
 	lp.rng.seed = 202
-	lp.populate(Genome.founder(lp.rng))
+	lp.populate()
 	var land0 := lp.land_frac
 	var events := []
 	lp.planet_event.connect(func(t): events.append(t))

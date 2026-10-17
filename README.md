@@ -18,8 +18,33 @@ Godot 4.3+ (GDScript). The design was prototyped as a single-page web sandbox fi
 1. Install Godot 4.3 or newer (standard build, not .NET).
 2. `godot --path .` (or open `project.godot` in the editor and press F5).
 
-The original top-down god view (levers, meteors, release your DNA onto the map) still runs with
-`godot --path . res://scenes/main.tscn`.
+The title screen lets you play a world alone, host one for friends on your network, or join one. Leave
+the seed blank for a random planet, or type a number or any word to get that exact planet again.
+
+## Multiplayer servers
+
+It works like Minecraft: anyone can run a server, and players join it by address. There is no central
+service; a server only shares its world seed, and every player's game builds the identical planet from it,
+so only live state (creatures, food, climate, meteors) travels over the network.
+
+- **Host on LAN** from the title screen: you play and host at the same time. Other players on the same
+  network see your world in their Join list automatically.
+- **Dedicated server**, headless, for a machine that just runs the world:
+  ```
+  godot --headless --path . -- --server --port 24565 --seed 42 --name "My world"
+  ```
+- **Join** from the title screen (pick a LAN world or type `address:port`), or straight from the command line:
+  ```
+  godot --path . -- --join 192.168.1.20:24565 --name Alice
+  ```
+
+Players outside your network need the server's UDP port (24565 by default) forwarded on its router; LAN
+discovery uses UDP 24566. When a player leaves, their creatures live on as wild animals; if they come back
+with the same name, they resume their lineage. Only the host can change the speed (it is everyone's clock),
+and a dedicated server always runs at 1x. At full population each player receives about 100 KB/s.
+
+The original top-down god view (levers, meteors, release your DNA onto the map) is still on the title
+screen as "Top-down sandbox".
 
 ## Controls (3D)
 
@@ -31,7 +56,8 @@ The original top-down god view (levers, meteors, release your DNA onto the map) 
 | Tab | Open or close the gene lab |
 | Arrows, A/T/G/C, Shift+A/T/G/C, Delete (gene lab open) | Move, replace a base, insert after it, cut it (1 Cas9 charge each) |
 | Enter | Start a new lineage after yours has ended |
-| 1 / 2 / 3, P | Speed 1x / 2x / 4x, pause |
+| 1 / 2 / 3, P | Speed 1x / 2x / 4x, pause (host only in multiplayer) |
+| Esc | Leave the world and return to the title screen |
 
 You live about a minute at 1x. Food is eaten on contact; carnivores also bite smaller creatures they touch.
 
@@ -71,7 +97,13 @@ mutation. Charges refill slowly while the world runs.
 - `scripts/planet3d.gd`: draws the sim in 3D. Sim `(x, y)` maps to `(x * 0.1, height, y * 0.1)` metres on a
   heightfield built from the same elevation grid. Creatures, food and predators are MultiMeshes.
 - `scripts/creature_model.gd`: the player's body, built from its genome (eyes, legs, spikes, jaws, fins).
-- `scripts/main3d.gd`: the 3D game: input, third-person camera, HUD and the germline gene lab.
+- `scripts/session.gd`: runs a world and its players. Solo, host and dedicated server share the same
+  authoritative server code; clients get the seed once, then mirror live state from zstd-compressed
+  snapshots (15 per second) and send input and actions as RPCs, which the server validates.
+- `scripts/launch.gd` (autoload `Launch`): how this run was started, from the menu or the command line.
+- `scripts/lan.gd`: LAN discovery beacons. `scripts/menu.gd`: the title screen.
+- `scripts/main3d.gd`: the 3D game view: input, third-person camera, HUD, name tags over other players
+  and the germline gene lab. A dedicated server builds no view.
 - `scripts/main.gd`: the top-down view: camera, input and HUD, all built in code.
 - `scripts/gene_lab.gd`: gene lab text (DNA strip and trait bars) shared by both HUDs.
 
@@ -84,9 +116,18 @@ godot --headless --path . -s res://scripts/test_sim.gd
 godot --headless --path . -s res://scripts/test_main.gd
 godot --headless --path . -s res://scripts/test_main3d.gd
 godot --headless --path . -s res://scripts/test_worlds.gd
+godot --headless --path . -s res://scripts/test_net.gd
 ```
 
+`test_net.gd` is end to end: it hosts a world and has a second game process join it, then starts a
+dedicated server process, finds it on the LAN, joins it, checks the planet matches, walks, edits its
+germline over the network and watches another player arrive.
+
 ## Known gaps and next steps
+
+- Servers do not save their worlds yet; a restarted server starts a fresh planet from its seed.
+- Internet play needs a forwarded port (no NAT traversal or relay), and every player receives the whole
+  world; sending only nearby creatures would cut bandwidth.
 
 - Other creatures are simple MultiMesh shapes (body, legs, optional spikes); only the player gets a full model.
 - Aquatic and carnivorous lineages can evolve but no native species starts as one.

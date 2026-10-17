@@ -40,7 +40,10 @@ class Creature:
 	var wa := 0.0
 	var dead := false
 	var cause := "" # how it died, phrased to follow "You ..."
-	var lineage := false # the player or one of the player's descendants
+	var id := 0 # unique within this world (used to sync creatures over the network)
+	var owner := 0 # lineage id of the player whose line this is; 0 = wild
+	var driver := 0 # peer id of the player playing this creature right now; 0 = AI
+	var dna_id := 0 # network id of its DNA string (server side)
 
 class Food:
 	var pos := Vector2.ZERO
@@ -96,16 +99,17 @@ var incoming: Array = [] # [Vector2 pos, ticks left]: meteors on their way down
 var _painted_temp := -1.0
 var _painted_craters := 0
 
-# Player creature (3D mode). It lives by the same rules as everything else, but moves by input
-# and only reproduces when the player asks.
-var player: Creature = null
-var player_dir := Vector2.ZERO # wanted heading, length <= 1
-var player_blocked := "" # why the last move was refused, empty if it was not
+# Players (3D mode). Each plays one creature that lives by the same rules as everything else,
+# but moves by input and only reproduces when asked. Keyed by peer id.
+var players := {} # peer -> Creature
+var inputs := {} # peer -> wanted heading, length <= 1
+var blocked := {} # peer -> why the last move was refused ("" if it was not)
+var next_id := 1
 
 signal extinct
 signal charge_tick
 signal terrain_changed
-signal player_died(old: Creature, heir: Creature) # heir is null when the lineage has ended
+signal player_died(peer: int, old: Creature, heir: Creature) # heir is null when the lineage has ended
 signal planet_event(text: String)
 signal meteor_incoming(pos: Vector2)
 signal meteor_impact(pos: Vector2, killed: int)
@@ -242,6 +246,8 @@ func spawn(dna: String, pos: Vector2, energy := 45.0, gen := 1) -> Creature:
 	c.r = Genome.radius(c.g)
 	c.e = energy
 	c.gen = gen
+	c.id = next_id
+	next_id += 1
 	creatures.append(c)
 	return c
 
@@ -256,7 +262,9 @@ func _reset() -> void:
 	tick = 0
 	species = 0
 	selected = null
-	player = null
+	players.clear()
+	inputs.clear()
+	blocked.clear()
 	incoming.clear()
 	craters.clear()
 	dynamic = false
@@ -270,20 +278,15 @@ func release(dna: String) -> void:
 	running = true
 
 
-## A living planet for the player to join (3D mode): the player and a few of their own kind,
-## plus native species that each start from their own founder genome. Everything evolves
-## under the same rules from here on.
-func populate(player_dna: String, natives := 4, per_species := 15) -> void:
+## A living planet for players to join (3D mode): native species that each start from their
+## own founder genome. Everything evolves under the same rules from here on.
+func populate(natives := 4, per_species := 15) -> void:
 	_reset()
 	for _s in natives:
 		var dna := Genome.founder(rng)
 		var home := rand_point(false)
 		for _i in per_species:
 			spawn(dna, near_land(home, 80.0))
-	player = spawn(player_dna, rand_point(false))
-	player.lineage = true
-	for _i in per_species - 1:
-		spawn(player_dna, near_land(player.pos, 60.0))
 	dynamic = true
 	era = 2
 	era_left = rng.randi_range(2000, 4000)
@@ -294,6 +297,31 @@ func populate(player_dna: String, natives := 4, per_species := 15) -> void:
 		_grow_food()
 	_count_species()
 	running = true
+
+
+## Peer `peer` starts playing lineage `owner`. If that lineage still has living members (the
+## player left and came back), they take over one of them; otherwise a new line
+## starts from `dna`, with a few wild kin of the same kind around it.
+func join(peer: int, owner: int, dna: String, kin := 14) -> Creature:
+	var c := _heir_of(owner, Vector2(WW, WH) / 2.0)
+	if c == null:
+		c = spawn(dna, rand_point(false))
+		c.owner = owner
+		for _i in kin:
+			spawn(dna, near_land(c.pos, 60.0))
+	c.driver = peer
+	players[peer] = c
+	running = true
+	return c
+
+
+## The player stops playing. Their creatures carry on under AI and stay their lineage.
+func leave(peer: int) -> void:
+	if players.has(peer):
+		players[peer].driver = 0
+	players.erase(peer)
+	inputs.erase(peer)
+	blocked.erase(peer)
 
 
 ## A random land point around p, or p itself if none turns up.
@@ -429,10 +457,16 @@ func step() -> void:
 	creatures = creatures.filter(func(c: Creature): return not c.dead)
 	if selected != null and not creatures.has(selected):
 		selected = null
-	if player != null and player.dead:
-		var old := player
-		player = _heir(old)
-		player_died.emit(old, player)
+	for peer in players.keys():
+		var old: Creature = players[peer]
+		if old.dead:
+			var heir := _heir_of(old.owner, old.pos)
+			if heir == null:
+				players.erase(peer)
+			else:
+				heir.driver = peer
+				players[peer] = heir
+			player_died.emit(peer, old, heir)
 	if tick % 120 == 0 and (absf(temp - _painted_temp) > 0.01 or craters.size() + _painted_craters > 0):
 		_reshape_coasts()
 	if tick % 25 == 0:
@@ -533,31 +567,35 @@ func breed_energy(c: Creature) -> float:
 	return 65.0 + c.r * 2.0
 
 
-## The player lays an offspring on demand. It inherits `germline` (the gene lab DNA, which
+## A player lays an offspring on demand. It inherits `germline` (the gene lab DNA, which
 ## starts as the player's own) with fresh mutations, so lab edits show up a generation later.
-func player_reproduce(germline: String) -> Creature:
-	if player == null or player.e <= breed_energy(player):
+func player_reproduce(peer: int, germline: String) -> Creature:
+	var c: Creature = players.get(peer)
+	if c == null or c.e <= breed_energy(c):
 		return null
-	var kid := _offspring(player, germline, mutation_rate())
+	var kid := _offspring(c, germline, mutation_rate())
 	creatures.append(kid)
 	return kid
 
 
-func lineage_count() -> int:
+func lineage_count(owner: int) -> int:
 	var n := 0
 	for c in creatures:
-		if c.lineage:
+		if c.owner == owner and owner != 0 and not c.dead:
 			n += 1
 	return n
 
 
-## The player's successor after death: the nearest living member of their lineage.
-func _heir(old: Creature) -> Creature:
+## A player's successor: the living member of lineage `owner` nearest to `near` that nobody
+## is playing, or null when the line has ended.
+func _heir_of(owner: int, near: Vector2) -> Creature:
+	if owner == 0:
+		return null
 	var best := INF
 	var heir: Creature = null
 	for c in creatures:
-		if c.lineage and not c.dead:
-			var d := c.pos.distance_squared_to(old.pos)
+		if c.owner == owner and not c.dead and c.driver == 0:
+			var d := c.pos.distance_squared_to(near)
 			if d < best:
 				best = d
 				heir = c
@@ -573,7 +611,9 @@ func _offspring(c: Creature, dna: String, rate: float) -> Creature:
 	kid.pos = c.pos + Vector2(rng.randfn(0, 6), rng.randfn(0, 6))
 	kid.e = c.e
 	kid.gen = c.gen + 1
-	kid.lineage = c.lineage
+	kid.owner = c.owner
+	kid.id = next_id
+	next_id += 1
 	return kid
 
 
@@ -597,11 +637,11 @@ func _step_creature(c: Creature, rate: float, born: Array[Creature]) -> void:
 	var r := c.r
 	var limbs: int = g["limbs"].size()
 	var vmax: float = (0.6 + g["speed"] * 1.8 + limbs * 0.07) * (0.8 + g["metab"] * 0.4)
-	var is_player := c == player
+	var is_player := c.driver != 0
 	var dir := Vector2.ZERO
 	var prey: Creature = null
 	if is_player:
-		dir = player_dir.limit_length(1.0)
+		dir = (inputs.get(c.driver, Vector2.ZERO) as Vector2).limit_length(1.0)
 		if g["diet"] > 0.5:
 			prey = _touching_prey(c)
 	else:
@@ -665,11 +705,12 @@ func _step_creature(c: Creature, rate: float, born: Array[Creature]) -> void:
 	if not out:
 		lethal_next = too_wet(g, is_wet(nxt)) and not too_wet(g, is_wet(c.pos))
 	if is_player:
-		player_blocked = ""
+		var why := ""
 		if out:
-			player_blocked = "The edge of the world."
+			why = "The edge of the world."
 		elif lethal_next:
-			player_blocked = "Your body can't survive in water." if g["aqua"] < 0.35 else "Your body can't survive on land."
+			why = "Your body can't survive in water." if g["aqua"] < 0.35 else "Your body can't survive on land."
+		blocked[c.driver] = why
 	if out or lethal_next:
 		if is_player:
 			c.vel = Vector2.ZERO

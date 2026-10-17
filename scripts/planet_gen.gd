@@ -128,6 +128,9 @@ func _make_terrain(r: RandomNumberGenerator) -> void:
 				e = (e - 0.5) * contrast + 0.5
 				var edge := pow(maxf(absf(u - 0.5), absf(v - 0.5)) * 2.0, 3.0)
 				elev[k] = e - edge * edge_drop + shift
+				# Always ring the map with sea, so nobody walks off the edge of the world.
+				var border := minf(minf(u, 1.0 - u), minf(v, 1.0 - v))
+				elev[k] = lerpf(World.SEA - 0.08, elev[k], smoothstep(0.0, 0.07, border))
 				moist[k] = clampf((n1.get_noise_2d(i, j) + 1.0) * 0.5, 0.0, 1.0)
 				# warm at the equator, or on the side facing the star for a locked world
 				var warmth := 1.0 - u if tidally_locked else 1.0 - absf(v - 0.5) * 2.0

@@ -171,7 +171,7 @@ func _build_water() -> void:
 	add_child(water)
 	var floor_mi := MeshInstance3D.new() # dark ocean floor beyond the map edge
 	floor_mi.mesh = plane
-	floor_mi.position = water.position + Vector3.DOWN * relief * 0.3
+	floor_mi.position = water.position + Vector3.DOWN * relief * 0.09 # just under the sea rim
 	var fm := StandardMaterial3D.new()
 	fm.albedo_color = (world.planet.palette["deep"] as Color).darkened(0.5)
 	floor_mi.material_override = fm
