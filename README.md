@@ -1,10 +1,11 @@
 # Primordia
 
-You are a creature on a living 3D planet. Your body is built from your DNA. Eat, dodge predators and lay
-offspring; when you die you carry on as your nearest descendant, and real mutations (substitutions,
-insertions, deletions, duplicated segments) take your line somewhere you did not plan. Around you, native
-species evolve under the same rules. A CRISPR-style gene lab lets you edit your germline, the DNA your
-offspring inherit.
+You begin as a simple blob drifting in the shallows of a living alien planet, with a single feature: a mouth,
+a leg, spikes, a flagellum, eyes... Your body is built from your DNA. Eat, dodge predators and lay offspring;
+when you die you carry on as your nearest descendant, and real mutations (substitutions, insertions,
+deletions, duplicated segments) take your line somewhere you did not plan, from floating blob toward
+something that walks. Around you, native species evolve under the same rules. A gene lab lets you steer
+your germline, the DNA your offspring inherit, by choosing among real mutations described in plain words.
 
 Every world is generated from a single seed and is alien in its own way: terrain shape, biome colours, sky,
 star type, moons, gravity, radiation, fertility, how creatures are proportioned, and even the genetic code. The
@@ -56,19 +57,34 @@ screen as "Top-down sandbox".
 | WASD / arrow keys | Move, relative to the camera |
 | Right-drag / mouse wheel | Orbit / zoom the camera |
 | R | Lay an offspring (needs a full energy bar; halves your energy) |
-| Tab | Open or close the gene lab |
-| Arrows, A/T/G/C, Shift+A/T/G/C, Delete (gene lab open) | Move, replace a base, insert after it, cut it (1 Cas9 charge each) |
-| Enter | Start a new lineage after yours has ended |
+| Tab | Open or close the gene lab (evolve) |
+| 1 / 2 / 3 (gene lab) | Apply one of three offered mutations (1 Cas9 charge) |
+| R (gene lab) | Offer three other mutations |
+| B (gene lab) | Switch to editing bases by hand: arrows, A/T/G/C, Shift+A/T/G/C, Delete |
+| 1 / 2 / 3, R (origin cards) | Begin as that origin / show three new ones (3 per lineage) |
 | 1 / 2 / 3, P | Speed 1x / 2x / 4x, pause (host only in multiplayer) |
 | Esc | Leave the world and return to the title screen |
 
 You live about a minute at 1x. Food is eaten on contact; carnivores also bite smaller creatures they touch.
 
+**Origins.** Each lineage starts from one of three cards. Every card is a random one-gene genome that happens
+to build a blob with exactly one feature; the card names it, says what it really does in the simulation, and
+shows a live 3D preview. Which features turn up depends on the planet's genetic code.
+
+**Body plans.** An empty genome is a limbless blob, and limbless bodies *float*: they drift over water and land
+alike, never drown, eat any food, but move at about half speed (sea predators still catch them over water).
+Limbs make a body fast, but tie it to its habitat: a Crawler or Walker lives on land, a Swimmer in water, an
+Amphibian in both. The HUD shows your current body plan and tells you when your line reaches a new one.
+
+**Evolving.** Tab offers three real mutations of your germline (point changes, insertions, deletions,
+duplications, sometimes a whole new gene), each summarised in plain words, for example "gains Legs, becomes a
+Walker, Speed +19%". The server checks every mutation is a single valid change before applying it.
+
 The planet changes too. Climate eras (ice age to hothouse) last one to two lifetimes; temperature drifts toward
 each era's target, the sea falls or rises with it (about 2.4 m either way, enough to open or drown land bridges),
 snow spreads or retreats, and cold ground grows less food. Meteors are sighted a few seconds before they land
 (a red column marks the blast zone) and scorch the ground for a while; solar storms raise mutation rates.
-Gene lab edits apply to offspring you lay afterwards, and every edit has an 8% chance of an off-target
+Gene lab changes apply to offspring you lay afterwards, and every one has an 8% chance of an off-target
 mutation. Charges refill slowly while the world runs.
 
 ## Controls (top-down view)
@@ -110,6 +126,8 @@ mutation. Charges refill slowly while the world runs.
   and the germline gene lab. A dedicated server builds no view.
 - `scripts/main.gd`: the top-down view: camera, input and HUD, all built in code.
 - `scripts/gene_lab.gd`: gene lab text (DNA strip and trait bars) shared by both HUDs.
+- `scripts/traits.gd`: genomes in human terms: features, body plans, plain-language mutation summaries and
+  random one-feature origins.
 
 ## Tests (headless)
 
@@ -136,6 +154,7 @@ germline over the network and watches another player arrive.
 
 - Other creatures are simple MultiMesh shapes (body, legs, optional spikes); only the player gets a full model.
 - Aquatic and carnivorous lineages can evolve but no native species starts as one.
+- No flight yet: floating is the only way to cross water without becoming a swimmer.
 - Speed: about 100 ticks/s at 600 creatures, so 4x is the practical ceiling. Candidates: spatial hashing for
   creature-vs-creature checks, moving the sim to a thread, or a GDExtension.
 - Gene lab is keyboard driven and text based; the web prototype's codon and amino-acid view is not ported yet.

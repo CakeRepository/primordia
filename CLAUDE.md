@@ -1,7 +1,8 @@
 # Primordia (Godot 4.3, GDScript)
 
-Evolution game: the player is a creature on a 3D planet, built from its DNA. It evolves across generations
-(you continue as your descendant) while native species evolve around it. A CRISPR-style gene lab edits the germline.
+Evolution game: the player is a creature on a 3D planet, built from its DNA. Lineages start as a floating blob
+with one feature (an origin card) and evolve across generations (you continue as your descendant) while native
+species evolve around it. The gene lab offers real mutations described in plain words (`traits.gd`).
 
 - Run: `godot --path .` (title menu). Dedicated server: `godot --headless --path . -- --server --port 24565 --seed 42`.
 - Multiplayer: `Session` is authoritative on the server; never change world state on a client. Client

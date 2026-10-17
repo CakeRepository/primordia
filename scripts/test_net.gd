@@ -58,6 +58,8 @@ func _init() -> void:
 	for peer in host.session.names:
 		if peer != 1:
 			bot_peer = peer
+	# a new player picks an origin before they have a body (a headless bot picks at once)
+	await _wait(func(): return host.world.players.has(bot_peer), 20.0)
 	print("host: bot joined=%s, players %s, bot plays a creature=%s" % [
 		joined, host.session.names.values(), host.world.players.has(bot_peer)])
 	ok = ok and joined and host.world.players.has(bot_peer)
@@ -105,10 +107,9 @@ func _init() -> void:
 		print("client: walked=%s (%s)" % [moved, cl.session.my_blocked if cl.session.my_blocked != "" else "moved"])
 		ok = ok and moved
 
-		# gene lab edit: a round trip to the server
+		# evolve: a chosen mutation is a round trip to the server
 		_press(cl, KEY_TAB)
-		_press(cl, KEY_RIGHT)
-		_press(cl, KEY_G)
+		_press(cl, KEY_1)
 		var edited: bool = await _wait(func(): return cl.session.charges == Session.MAX_CHARGES - 1, 10.0)
 		_press(cl, KEY_TAB)
 		print("client: germline edit confirmed by the server=%s (%s)" % [edited, cl.session.status])

@@ -27,6 +27,7 @@ signal meteor_seen(pos: Vector2)
 signal impacted(pos: Vector2, killed: int)
 signal died(cause: String, heir_gen: int) # heir_gen < 0: the lineage has ended
 signal reborn
+signal origin_needed # this player has no creature and should pick an origin
 signal lab_changed
 signal roster_changed
 signal disconnected(reason: String)
@@ -44,7 +45,8 @@ var germline := ""
 var charges := MAX_CHARGES
 var status := DEFAULT_STATUS
 var cursor_hint := -1 # where an edit left the lab cursor
-var game_over := false
+var game_over := false # this player's lineage has ended
+var needs_origin := false # waiting for this player to choose how their lineage begins
 var my_id := 0 # id of the creature this player is playing (0 = none)
 var my_line := 0 # living members of this player's lineage
 var my_blocked := ""
@@ -236,8 +238,14 @@ func edit(kind: String, cursor: int, base: String) -> void:
 	_act_here_or_remote("edit", [kind, cursor, base])
 
 
-func restart() -> void:
-	_act_here_or_remote("restart", [])
+## Begin a new lineage from a starting genome (one of Traits.origins). The server checks it.
+func choose_origin(dna: String) -> void:
+	_act_here_or_remote("origin", [dna])
+
+
+## Apply one mutation (from Traits.mutation_options) to this player's germline.
+func mutate(m: Dictionary) -> void:
+	_act_here_or_remote("mutate", [m])
 
 
 ## Only the server's own player (solo or host) can change the speed: it is everyone's clock.
@@ -295,18 +303,19 @@ func _add_player(peer: int, player_name: String) -> void:
 		_owners[n] = _next_owner
 		_next_owner += 1
 	var owner: int = _owners[n]
-	var resumed := world.lineage_count(owner) > 0 # they played here before and their line lives on
 	var back: Dictionary = _saved_players.get(n, {})
-	var c := world.join(peer, owner, back.get("germline", Genome.founder(world.rng)))
-	_players[peer] = {"name": n, "owner": owner, "germline": back.get("germline", c.dna),
+	_players[peer] = {"name": n, "owner": owner, "germline": back.get("germline", ""),
 		"charges": back.get("charges", MAX_CHARGES), "status": DEFAULT_STATUS}
 	names[peer] = n
-	_send_lab(peer, 0)
 	_send_roster()
-	if resumed:
+	if world.lineage_count(owner) > 0: # they played here before and their line lives on
+		var c := world.join(peer, owner, "")
+		if _players[peer]["germline"] == "":
+			_players[peer]["germline"] = c.dna
+		_send_lab(peer, 0)
 		_emit_to(peer, "msg", ["Welcome back. You return as your descendant, generation %d." % c.gen])
 	else:
-		_emit_to(peer, "msg", ["You hatch on %s. Eat, stay alive, and press R to lay offspring." % world.planet.name])
+		_emit_to(peer, "choose", [])
 	_emit_all("msg", ["%s joined the world." % n], peer)
 	if not has_local_player or peer != 1:
 		print("[server] %s joined (%d player%s)" % [n, _players.size(), "" if _players.size() == 1 else "s"])
@@ -361,14 +370,39 @@ func _do(peer: int, action: String, args: Array) -> void:
 				st["germline"] = r["dna"]
 				cursor = r["cursor"]
 			_send_lab(peer, cursor)
-		"restart":
-			if world.players.has(peer):
+		"origin":
+			# Only a real starting blob (one short gene, one feature), and only without a body.
+			if world.players.has(peer) or args.size() != 1 or typeof(args[0]) != TYPE_STRING:
 				return
-			var c := world.join(peer, st["owner"], st["germline"])
-			st["germline"] = c.dna
+			var dna: String = args[0]
+			var feature := Traits.origin_feature(dna)
+			if feature == "" or world.lineage_count(st["owner"]) > 0:
+				return
+			world.join(peer, st["owner"], dna)
+			st["germline"] = dna
 			_send_lab(peer, 0)
 			_emit_to(peer, "reborn", [])
-			_emit_to(peer, "msg", ["A new lineage hatches on %s." % world.planet.name])
+			_emit_to(peer, "msg", ["Your lineage begins on %s as a %s. Eat, stay alive, and press R to lay offspring." % [
+				world.planet.name, Traits.INFO[feature][1]]])
+		"mutate":
+			if args.size() != 1 or typeof(args[0]) != TYPE_DICTIONARY:
+				return
+			if st["charges"] < 1:
+				st["status"] = "No Cas9 charges left. They refill slowly."
+				_send_lab(peer, -1)
+				return
+			var before: String = st["germline"]
+			var after := Genome.apply_mutation(before, args[0])
+			if after == "":
+				return
+			var hit := Genome.off_target(after, world.rng)
+			st["charges"] -= 1
+			st["germline"] = hit[0]
+			var change := Traits.describe_change(Genome.decode(before), Genome.decode(hit[0]))
+			st["status"] = ("Your offspring will be: " + change) if change != "" else "No visible change."
+			if hit[1] >= 0:
+				st["status"] = "Off-target hit at base %d! %s" % [hit[1] + 1, st["status"]]
+			_send_lab(peer, -1)
 
 
 func _on_player_died(peer: int, old: World.Creature, heir: World.Creature) -> void:
@@ -596,9 +630,16 @@ func _handle_event(kind: String, args: Array) -> void:
 		"died":
 			if args[1] < 0:
 				game_over = true
+				needs_origin = true
 			died.emit(args[0], args[1])
+			if args[1] < 0:
+				origin_needed.emit()
+		"choose":
+			needs_origin = true
+			origin_needed.emit()
 		"reborn":
 			game_over = false
+			needs_origin = false
 			reborn.emit()
 
 
