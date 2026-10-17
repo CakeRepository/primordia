@@ -126,10 +126,12 @@ static func junk(rng: RandomNumberGenerator, n: int) -> String:
 
 
 ## A viable land founder: moderate traits, no spikes, herbivore, land dweller.
+## Two genes: every gene's start codon adds a Met (size, heat tolerance, limbs), so with
+## more genes the traits saturate and almost no candidate passes the filter.
 static func founder(rng: RandomNumberGenerator) -> String:
 	for _t in 20000:
 		var s := junk(rng, 5)
-		for _i in 6:
+		for _i in 2:
 			s += random_gene(rng, 7) + junk(rng, 4)
 		var g := decode(s)
 		if g["size"] > .25 and g["size"] < .75 and g["speed"] > .25 and g["speed"] < .75 \

@@ -187,6 +187,7 @@ func release(dna: String) -> void:
 	preds.clear()
 	history.clear()
 	tick = 0
+	species = 0
 	selected = null
 	for _i in 60:
 		spawn(dna, rand_point(false))
@@ -207,6 +208,14 @@ func meteor() -> void:
 	foods = foods.filter(func(f: Food): return f.pos.distance_to(p) > r)
 	if selected != null and not creatures.has(selected):
 		selected = null
+
+
+## Fresh terrain under the current population. Predators are respawned so none are left
+## stranded in the wrong biome, where they could never move again.
+func new_world() -> void:
+	gen_world()
+	foods.clear()
+	preds.clear()
 
 
 func storm() -> void:
@@ -291,7 +300,8 @@ func step() -> void:
 		grid[grid_index(f.pos)].append(f)
 	var born: Array[Creature] = []
 	for c in creatures:
-		_step_creature(c, rate, born)
+		if not c.dead: # eaten by a carnivore earlier this tick
+			_step_creature(c, rate, born)
 	creatures.append_array(born)
 	for q in preds:
 		_step_predator(q)
@@ -312,6 +322,7 @@ func step() -> void:
 		_count_species()
 	if running and creatures.is_empty():
 		running = false
+		species = 0
 		extinct.emit()
 
 

@@ -12,5 +12,9 @@ func _init() -> void:
 			print("tick %d pop %d food %d species %d" % [w.tick, w.creatures.size(), w.foods.size(), w.species])
 	var ok := w.creatures.size() > 20
 	print("final pop %d gen %d" % [w.creatures.size(), w.max_generation()])
+	# extinction stops the world and clears the species count
+	w.creatures.clear()
+	w.step()
+	ok = ok and not w.running and w.species == 0
 	print("PASS" if ok else "FAIL")
 	quit(0 if ok else 1)
