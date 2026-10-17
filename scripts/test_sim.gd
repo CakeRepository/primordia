@@ -3,8 +3,10 @@ extends SceneTree
 
 func _init() -> void:
 	var w := World.new()
+	w.planet = PlanetGen.new(101) # fixed worlds and sim seeds keep the test reproducible
 	root.add_child(w)
 	await process_frame
+	w.rng.seed = 101
 	w.release(Genome.founder(w.rng))
 	for i in 3000:
 		w.step()
@@ -19,8 +21,10 @@ func _init() -> void:
 
 	# A living planet: an ice age cools it and drops the sea, exposing land.
 	var lp := World.new()
+	lp.planet = PlanetGen.new(202)
 	root.add_child(lp)
 	await process_frame
+	lp.rng.seed = 202
 	lp.populate(Genome.founder(lp.rng))
 	var land0 := lp.land_frac
 	var events := []

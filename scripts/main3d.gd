@@ -12,6 +12,7 @@ var planet: Planet3D
 var model: CreatureModel
 var cam: Camera3D
 
+var world_seed := 0 # the planet to build; 0 picks a random one
 var germline := ""
 var charges := MAX_CHARGES
 var cursor := 0
@@ -43,6 +44,7 @@ var lab_text: RichTextLabel
 func _ready() -> void:
 	world = World.new()
 	world.visible = false # its 2D drawing is for the top-down view only
+	world.planet = PlanetGen.new(world_seed if world_seed != 0 else randi())
 	add_child(world)
 	planet = Planet3D.new()
 	add_child(planet)
@@ -134,7 +136,7 @@ func _process(delta: float) -> void:
 	if p != null:
 		if p.dna != _model_dna:
 			_model_dna = p.dna
-			model.build(p.g, p.r * Planet3D.S)
+			model.build(p.g, p.r * Planet3D.S, world.planet.body_shape)
 		model.position = planet.rest_point(p.pos, model.stand)
 		model.animate(p.vel, delta * speed)
 		_focus = model.position
@@ -161,8 +163,14 @@ func _update_camera(delta: float) -> void:
 	var target := _focus + Vector3(0.0, reach * 0.6, 0.0)
 	var dist := (3.0 + reach * 7.0) * zoom
 	var want := target + Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * dist
-	var ground := maxf(planet.ground_y(Vector2(want.x, want.z) / Planet3D.S), 0.0)
-	want.y = maxf(want.y, ground + 0.6) # never dip under the terrain or the sea
+	# Rise until the line of sight clears every hill between the camera and the player
+	# (and never dip under the terrain or the sea).
+	for i in range(1, 9):
+		var f := i / 8.0
+		var at := target.lerp(want, f)
+		var ground := maxf(planet.ground_y(Vector2(at.x, at.z) / Planet3D.S), planet.water_y()) + 0.6
+		if ground > target.y + (want.y - target.y) * f:
+			want.y = target.y + (ground - target.y) / f
 	if _cam_placed:
 		cam.position = cam.position.lerp(want, 1.0 - exp(-delta * 10.0))
 	else:
@@ -378,9 +386,9 @@ func _update_hud(delta: float) -> void:
 	stats_label.text = "Population %d   Species %d   World age %.1f kyr   %s" % [
 		world.creatures.size(), world.species, world.tick / 100.0, "Paused" if speed == 0 else "Speed %dx" % speed]
 	var trend := clampf(world.climate_base + World.ERAS[world.era]["temp"], 0.0, 1.0) - world.temp
-	climate_label.text = "%s%s\n%d °C   sea level %+.1f m" % [
-		World.ERAS[world.era]["name"], "  (cooling)" if trend < -0.02 else ("  (warming)" if trend > 0.02 else ""),
-		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * Planet3D.RELIEF]
+	climate_label.text = "%s  (seed %d)\n%s\n%s%s\n%d °C   sea level %+.1f m" % [
+		world.planet.name, world.planet.seed, world.planet.describe(), World.ERAS[world.era]["name"], "  (cooling)" if trend < -0.02 else ("  (warming)" if trend > 0.02 else ""),
+		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * planet.relief]
 	var p := world.player
 	(energy_bar.get_parent() as Control).visible = p != null
 	(age_bar.get_parent() as Control).visible = p != null

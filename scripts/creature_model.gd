@@ -10,7 +10,8 @@ var _torso: Node3D
 var _phase := 0.0
 
 
-func build(g: Dictionary, radius: float) -> void:
+## shape is the world's body proportions (width, height, length).
+func build(g: Dictionary, radius: float, shape := Vector3.ONE) -> void:
 	for ch in get_children():
 		remove_child(ch)
 		ch.queue_free()
@@ -22,7 +23,7 @@ func build(g: Dictionary, radius: float) -> void:
 	_torso = Node3D.new()
 	add_child(_torso)
 	var body := _part(_torso, Planet3D.sphere_mesh(radius), skin)
-	body.scale = Vector3(0.95, 0.85, 1.15)
+	body.scale = shape
 
 	var eye_r: float = radius * (0.13 + g["sense"] * 0.17)
 	for side in [-1.0, 1.0]:

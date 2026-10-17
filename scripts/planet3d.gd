@@ -1,13 +1,15 @@
 class_name Planet3D
 extends Node3D
 ## 3D view of the World simulation. The sim stays 2D (x, y on the ground plane); this node maps
-## it onto a heightfield, sim (x, y) -> (x * S, height, y * S), and draws terrain, water, food,
-## predators and every creature except the player (who gets a detailed CreatureModel).
+## it onto a heightfield, sim (x, y) -> (x * S, height, y * S), and draws terrain, water, sky,
+## moons, food, predators and every creature except the player (who gets a CreatureModel).
+## Colours, sky, star, moons and body proportions all come from the world's PlanetGen.
 
 const S := 0.1 # metres per sim unit
-const RELIEF := 40.0 # metres of height per unit of elevation away from sea level
+const MOON_DIST := 650.0
 
 var world: World
+var relief := 40.0 # metres of height per unit of elevation away from sea level
 var terrain := MeshInstance3D.new()
 var bodies: MultiMesh # smooth creatures
 var spiky: MultiMesh # creatures with spikes
@@ -27,10 +29,12 @@ var _built_version := -1
 var _meteor_fx: Array = [] # [fireball, warning column] per incoming meteor
 var _flashes: Array = [] # [MeshInstance3D, seconds since impact]
 var _time := 0.0
+var _moons: Array[MeshInstance3D] = []
 
 
 func setup(w: World) -> void:
 	world = w
+	relief = w.planet.relief
 	_build_environment()
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
@@ -62,15 +66,19 @@ func update_planet(delta: float) -> void:
 	_sky_mat.ground_horizon_color = horizon
 	_env.fog_light_color = horizon
 	_update_meteors(delta)
+	var cam := get_viewport().get_camera_3d()
+	if cam != null: # moons sit on the sky, so they travel with the camera
+		for i in _moons.size():
+			_moons[i].position = cam.global_position + world.planet.moons[i]["dir"] * MOON_DIST
 
 
 ## Height of the sea surface, which rises and falls with the climate.
 func water_y() -> float:
-	return (world.sea_level - World.SEA) * RELIEF
+	return (world.sea_level - World.SEA) * relief
 
 
 func ground_y(p: Vector2) -> float:
-	return (world.elev_at(p) - World.SEA) * RELIEF
+	return (world.elev_at(p) - World.SEA) * relief
 
 
 ## 3D position for something whose centre should sit `lift` metres above the ground,
@@ -113,7 +121,7 @@ func build_terrain() -> void:
 		for i in World.GW:
 			var k := j * World.GW + i
 			st.set_color(world.terrain_color(k))
-			st.add_vertex(Vector3((i + 0.5) * World.CS * S, (world.elev[k] - World.SEA) * RELIEF, (j + 0.5) * World.CS * S))
+			st.add_vertex(Vector3((i + 0.5) * World.CS * S, (world.elev[k] - World.SEA) * relief, (j + 0.5) * World.CS * S))
 	for j in World.GH - 1:
 		for i in World.GW - 1:
 			var k := j * World.GW + i
@@ -156,16 +164,16 @@ func _build_water() -> void:
 	water.mesh = plane
 	water.position = Vector3(size.x, 0.0, size.y) / 2.0
 	var wm := StandardMaterial3D.new()
-	wm.albedo_color = Color(0.1, 0.36, 0.5, 0.7)
+	wm.albedo_color = world.planet.water
 	wm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	wm.roughness = 0.12
 	water.material_override = wm
 	add_child(water)
 	var floor_mi := MeshInstance3D.new() # dark ocean floor beyond the map edge
 	floor_mi.mesh = plane
-	floor_mi.position = water.position + Vector3.DOWN * RELIEF * 0.3
+	floor_mi.position = water.position + Vector3.DOWN * relief * 0.3
 	var fm := StandardMaterial3D.new()
-	fm.albedo_color = Color(0.03, 0.12, 0.16)
+	fm.albedo_color = (world.planet.palette["deep"] as Color).darkened(0.5)
 	floor_mi.material_override = fm
 	add_child(floor_mi)
 
@@ -173,10 +181,13 @@ func _build_water() -> void:
 func _build_environment() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
 	_sky_mat = sky_mat
-	sky_mat.sky_top_color = Color(0.2, 0.4, 0.68)
-	sky_mat.sky_horizon_color = Color(0.66, 0.76, 0.84)
-	sky_mat.ground_horizon_color = Color(0.66, 0.76, 0.84)
-	sky_mat.ground_bottom_color = Color(0.08, 0.14, 0.2)
+	var pl := world.planet
+	_sun_color = pl.star_color
+	_horizon = pl.sky_horizon
+	sky_mat.sky_top_color = pl.sky_top
+	sky_mat.sky_horizon_color = pl.sky_horizon
+	sky_mat.ground_horizon_color = pl.sky_horizon
+	sky_mat.ground_bottom_color = (pl.palette["deep"] as Color).darkened(0.4)
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	var env := Environment.new()
@@ -187,18 +198,31 @@ func _build_environment() -> void:
 	env.ambient_light_energy = 0.7
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.66, 0.76, 0.84)
+	env.fog_light_color = pl.sky_horizon
 	env.fog_density = 0.0012
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 	var sun := DirectionalLight3D.new()
 	_sun = sun
-	sun.rotation_degrees = Vector3(-52, -35, 0)
-	sun.light_energy = 1.1
+	sun.rotation_degrees = Vector3(pl.sun_angles.x, pl.sun_angles.y, 0)
+	sun.light_color = pl.star_color
+	sun.light_energy = pl.star_energy
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 140.0
 	add_child(sun)
+	for m in pl.moons:
+		var mi := MeshInstance3D.new()
+		mi.mesh = sphere_mesh(m["size"])
+		var mm := StandardMaterial3D.new()
+		mm.albedo_color = m["color"]
+		mm.disable_fog = true
+		mm.emission_enabled = true # faintly self-lit so the night side is not black
+		mm.emission = (m["color"] as Color).darkened(0.7)
+		mi.material_override = mm
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		_moons.append(mi)
 
 
 # ---------------------------------------------------------------- life
@@ -208,6 +232,7 @@ func update_life(skip: World.Creature) -> void:
 	var nb := 0
 	var ns := 0
 	var nl := 0
+	var shape := world.planet.body_shape
 	for c in world.creatures:
 		if c == skip or c.dead:
 			continue
@@ -216,7 +241,8 @@ func update_life(skip: World.Creature) -> void:
 		var at := rest_point(c.pos, rad)
 		var head := c.vel.angle()
 		var col := body_color(g)
-		var xf := Transform3D(Basis(Vector3.UP, -head).scaled(Vector3(rad, rad, rad)), at)
+		# local +X is the heading; body_shape is (width, height, length)
+		var xf := Transform3D(Basis(Vector3.UP, -head) * Basis.from_scale(Vector3(shape.z, shape.y, shape.x) * rad), at)
 		if g["spikes"] > 0.3:
 			if ns < spiky.instance_count:
 				spiky.set_instance_transform(ns, xf)
@@ -242,7 +268,7 @@ func update_life(skip: World.Creature) -> void:
 		if nf >= food_mm.instance_count:
 			break
 		food_mm.set_instance_transform(nf, Transform3D(Basis.IDENTITY, rest_point(f.pos, 0.14)))
-		food_mm.set_instance_color(nf, Color("9be8ff") if f.aq else Color("a6f5b8"))
+		food_mm.set_instance_color(nf, world.planet.food_sea if f.aq else world.planet.food_land)
 		nf += 1
 	food_mm.visible_instance_count = nf
 
@@ -253,7 +279,7 @@ func update_life(skip: World.Creature) -> void:
 		var dir := Vector3(p.vel.x, 0.0, p.vel.y)
 		dir = dir.normalized() if dir.length_squared() > 0.0001 else Vector3.RIGHT
 		pred_mm.set_instance_transform(np, Transform3D(Basis(Quaternion(Vector3.UP, dir)), rest_point(p.pos, 0.6)))
-		pred_mm.set_instance_color(np, Color("7a3a44") if p.stun > 0 else Color("ff5d73"))
+		pred_mm.set_instance_color(np, world.planet.predator.darkened(0.55) if p.stun > 0 else world.planet.predator)
 		np += 1
 	pred_mm.visible_instance_count = np
 

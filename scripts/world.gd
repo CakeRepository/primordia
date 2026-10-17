@@ -1,6 +1,7 @@
 class_name World
 extends Node2D
 ## The living planet: terrain, food, predators and creatures. Port of the web prototype.
+## The planet itself (terrain, palette, physics, genetic code) comes from a PlanetGen seed.
 
 const WW := 2400.0
 const WH := 1500.0
@@ -54,6 +55,7 @@ class Predator:
 	var wa := 0.0
 
 var rng := RandomNumberGenerator.new()
+var planet: PlanetGen = null # set before adding to the tree to choose the world; random otherwise
 var elev := PackedFloat32Array()
 var moist := PackedFloat32Array()
 var base_t := PackedFloat32Array()
@@ -114,35 +116,27 @@ func _ready() -> void:
 	grid.resize(FW * FH)
 	for i in grid.size():
 		grid[i] = []
-	gen_world()
+	if planet == null:
+		gen_world()
+	else:
+		use_planet(planet)
 
 
 # ---------------------------------------------------------------- terrain
 
+## A brand-new random planet under the current population.
 func gen_world() -> void:
+	use_planet(PlanetGen.new(rng.randi()))
+
+
+func use_planet(p: PlanetGen) -> void:
+	planet = p
+	p.apply_biochemistry()
+	elev = p.elev
+	moist = p.moist
+	base_t = p.base_t
+	climate_base = p.climate
 	terrain_version += 1
-	var n0 := FastNoiseLite.new()
-	n0.seed = rng.randi()
-	n0.frequency = 0.012
-	n0.fractal_octaves = 4
-	var n1 := FastNoiseLite.new()
-	n1.seed = rng.randi()
-	n1.frequency = 0.02
-	n1.fractal_octaves = 3
-	elev.resize(GW * GH)
-	moist.resize(GW * GH)
-	base_t.resize(GW * GH)
-	for j in GH:
-		for i in GW:
-			var k := j * GW + i
-			var u := float(i) / GW
-			var v := float(j) / GH
-			var e := (n0.get_noise_2d(i, j) + 1.0) * 0.5
-			e = (e - 0.5) * 1.5 + 0.5
-			var edge := pow(maxf(absf(u - 0.5), absf(v - 0.5)) * 2.0, 3.0)
-			elev[k] = e - edge * 0.28
-			moist[k] = clampf((n1.get_noise_2d(i, j) + 1.0) * 0.5, 0.0, 1.0)
-			base_t[k] = clampf(0.12 + 0.78 * (1.0 - absf(v - 0.5) * 2.0) - maxf(0.0, elev[k] - SEA) * 0.5, 0.0, 1.0)
 	_measure_land()
 	paint_terrain()
 
@@ -176,23 +170,24 @@ func _biome_color(k: int) -> Color:
 	var e := elev[k]
 	var m := moist[k]
 	var tl := clampf(base_t[k] + temp - 0.5, 0.0, 1.0)
+	var pal := planet.palette
 	if e < sea_level:
 		var d := clampf((sea_level - e) / 0.25, 0.0, 1.0)
-		var c := Color8(int(22 - d * 14), int(82 - d * 44), int(108 - d * 38))
-		return c.lerp(Color8(200, 215, 220), 0.35) if tl < 0.12 else c
+		var c: Color = pal["shallow"].lerp(pal["deep"], d)
+		return c.lerp(pal["ice_sea"], 0.35) if tl < 0.12 else c
 	if e < sea_level + 0.025:
-		return Color8(120, 112, 80)
+		return pal["coast"]
 	if e > 0.78:
-		return Color8(200, 210, 214) if tl < 0.35 else Color8(95, 100, 104)
+		return pal["snow"] if tl < 0.35 else pal["rock"]
 	if tl < 0.22:
-		return Color8(190, 205, 210)
+		return pal["frost"]
 	if tl < 0.4:
-		return Color8(70, 92, 88)
+		return pal["tundra"]
 	if m > 0.58 and tl > 0.35:
-		return Color8(28, 82, 48)
+		return pal["jungle"]
 	if m < 0.34 and tl > 0.55:
-		return Color8(146, 118, 66)
-	return Color8(52, 100, 56)
+		return pal["desert"]
+	return pal["plain"]
 
 
 ## Elevation anywhere, bilinearly interpolated between cell centres (for smooth 3D ground).
@@ -515,6 +510,7 @@ func _grow_food() -> void:
 		var wet := elev[k] < sea_level
 		# frozen ground grows little
 		var fert := 0.5 if wet else (0.2 + moist[k] * 0.9) * clampf((base_t[k] + temp - 0.6) * 4.0, 0.05, 1.0)
+		fert *= planet.fertility
 		var limit := cap * ((1.0 - land_frac) if wet else land_frac)
 		if (n_sea if wet else n_land) >= limit:
 			continue
@@ -530,7 +526,7 @@ func _grow_food() -> void:
 
 
 func mutation_rate() -> float:
-	return mut * (4.0 if mut_boost > 0 else 1.0)
+	return mut * planet.radiation * (4.0 if mut_boost > 0 else 1.0)
 
 
 func breed_energy(c: Creature) -> float:
@@ -699,7 +695,7 @@ func _step_creature(c: Creature, rate: float, born: Array[Creature]) -> void:
 			prey.cause = "were eaten by a carnivore"
 			c.e += (26.0 + prey.r * 4.0) * (0.3 + g["diet"])
 	var t := temp_at(c.pos)
-	c.e -= 0.5 * (0.025 + r * r * 0.0009 + vmax * vmax * 0.007) * (0.6 + g["metab"] * 0.8) \
+	c.e -= 0.5 * (0.025 + (r * r * 0.0009 + vmax * vmax * 0.007) * planet.gravity) * (0.6 + g["metab"] * 0.8) \
 		+ absf(g["temp"] - t) * 0.07 + limbs * 0.002 + g["len"] * 0.00003 + stress(g, wet)
 	c.age += 1
 	if c.e <= 0.0:

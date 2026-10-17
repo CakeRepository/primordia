@@ -1,10 +1,12 @@
 class_name Genome
 extends RefCounted
 ## DNA string <-> phenotype. Genes start at ATG and end at a stop codon.
-## Each codon maps to an amino acid (standard genetic code); each amino acid
-## adds a small fixed vector to the body traits. Ported from the web prototype.
+## Each codon maps to an amino acid; each amino acid adds a small fixed vector to the body
+## traits. Earth's genetic code is the default; every alien world installs its own
+## (use_biochemistry), so the same DNA builds a different body on a different planet.
 
-const CODE := "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG"
+const EARTH_CODE := "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG"
+const AMINO := "ACDEFGHIKLMNPQRSTVWY"
 const BASES := ["A", "T", "G", "C"]
 const KEYS := ["size", "speed", "sense", "spikes", "camo", "temp", "metab", "diet", "aqua"]
 const LABELS := {
@@ -17,7 +19,7 @@ const MAX_LEN := 1200
 const OFF_TARGET := 0.08 # chance that a CRISPR edit also hits a random base
 
 # Effect vectors: size, speed, sense, spikes, camo, temp, metab, diet, aqua, limbs, hue
-const EFF := {
+const EARTH_EFF := {
 	"F": [0.9417, 0.6394, 0, 0, 0, 0, 0, 0, 0, 0, -0.4707],
 	"L": [0, 0.5913, 0, 0, -0.455, 0, 0, 0, 0, 0, 0.5584],
 	"S": [0, 0, 0, 0, 0, 0, 0, -0.7358, 0, 0, 0.5427],
@@ -40,6 +42,9 @@ const EFF := {
 	"G": [0, 0, 0.8219, 0, 0, 0, 0.5459, 0, 0, 0.8908, 0]
 }
 
+static var code := EARTH_CODE # the active world's genetic code
+static var eff: Dictionary = EARTH_EFF # the active world's amino-acid effects
+static var hue_base := 200.0
 static var _cache := {}
 static var _base_index := {"T": 0, "C": 1, "A": 2, "G": 3}
 
@@ -76,10 +81,10 @@ static func decode(dna: String) -> Dictionary:
 				j += 3
 				if idx < 0:
 					continue
-				var aa := CODE[idx]
+				var aa := code[idx]
 				if aa == "*":
 					break
-				var e: Array = EFF[aa]
+				var e: Array = eff[aa]
 				for k in 11:
 					sum[k] += e[k]
 			i = j
@@ -95,7 +100,7 @@ static func decode(dna: String) -> Dictionary:
 		var f := fposmod(absf(sin(q * 12.9 + sum[9] * 3.0) * 43758.0), 1.0)
 		limbs.append(Vector2(float(q) / count * TAU + 0.3 * sin(q * 1.7 + sum[10]), 0.3 + 0.7 * f))
 	g["limbs"] = limbs
-	g["hue"] = fposmod(200.0 + sum[10] * 45.0, 360.0)
+	g["hue"] = fposmod(hue_base + sum[10] * 45.0, 360.0)
 	if _cache.size() > 6000:
 		_cache.clear()
 	_cache[dna] = g
@@ -113,7 +118,7 @@ static func random_gene(rng: RandomNumberGenerator, codons: int) -> String:
 		while true:
 			c = random_base(rng) + random_base(rng) + random_base(rng)
 			var idx := codon_index(c, 0)
-			if idx >= 0 and CODE[idx] != "*" and c != "ATG":
+			if idx >= 0 and code[idx] != "*" and c != "ATG":
 				break
 		s += c
 	return s + ["TAA", "TAG", "TGA"][rng.randi() % 3]
@@ -130,7 +135,13 @@ static func junk(rng: RandomNumberGenerator, n: int) -> String:
 ## Two genes: every gene's start codon adds a Met (size, heat tolerance, limbs), so with
 ## more genes the traits saturate and almost no candidate passes the filter.
 static func founder(rng: RandomNumberGenerator) -> String:
-	for _t in 20000:
+	var s := find_founder(rng, 20000)
+	return s if s != "" else junk(rng, 5) + random_gene(rng, 7) + random_gene(rng, 7)
+
+
+## Search for a founder that passes the viability filter; "" if none turned up in `tries`.
+static func find_founder(rng: RandomNumberGenerator, tries: int) -> String:
+	for _t in tries:
 		var s := junk(rng, 5)
 		for _i in 2:
 			s += random_gene(rng, 7) + junk(rng, 4)
@@ -140,7 +151,69 @@ static func founder(rng: RandomNumberGenerator) -> String:
 				and g["aqua"] < .3 and g["temp"] > .25 and g["temp"] < .75 \
 				and g["metab"] > .25 and g["metab"] < .75 and g["limbs"].size() >= 1:
 			return s
-	return junk(rng, 5) + random_gene(rng, 7) + random_gene(rng, 7)
+	return ""
+
+
+static func use_earth_biochemistry() -> void:
+	code = EARTH_CODE
+	eff = EARTH_EFF
+	hue_base = 200.0
+	_cache.clear()
+
+
+## Install an alien biochemistry generated from `seed`. ATG stays the start codon and
+## TAA/TAG/TGA stay stops, so genes are found the same way on every world; every other codon
+## is reassigned to an amino acid, and each amino acid gets its own random effect on the body.
+static func use_biochemistry(seed: int) -> void:
+	var r := RandomNumberGenerator.new()
+	r.seed = seed
+	# 60 sense codons besides ATG: every amino acid but Met at least once, the rest random.
+	var letters: Array = []
+	for aa in AMINO:
+		if aa != "M":
+			letters.append(aa)
+	while letters.size() < 60:
+		letters.append(letters[r.randi() % 19])
+	for i in range(letters.size() - 1, 0, -1): # Fisher-Yates with our own rng, so it is reproducible
+		var j := r.randi() % (i + 1)
+		var t = letters[i]
+		letters[i] = letters[j]
+		letters[j] = t
+	var c := ""
+	for i in 64:
+		if EARTH_CODE[i] == "*":
+			c += "*"
+		elif i == START_IDX:
+			c += "M"
+		else:
+			c += letters.pop_back()
+	code = c
+	# Each amino acid nudges two or three traits, like Earth's table but different on every world.
+	var table := {}
+	for aa in AMINO:
+		var v: Array = []
+		v.resize(11)
+		v.fill(0.0)
+		var picks: Array = range(11)
+		for _n in r.randi_range(2, 3):
+			var k: int = picks.pop_at(r.randi() % picks.size())
+			v[k] = r.randf_range(0.4, 1.0) * (1.0 if r.randf() < 0.5 else -1.0)
+		if aa == "M": # every gene starts with one, so keep it gentle
+			for k in 11:
+				v[k] *= 0.35
+		table[aa] = v
+	# Every trait must be pushable both ways, or some bodies could never evolve on this world.
+	for k in 11:
+		for dir in [1.0, -1.0]:
+			var found := false
+			for aa in table:
+				found = found or table[aa][k] * dir > 0.0
+			if not found:
+				var aa: String = AMINO[r.randi() % AMINO.length()].replace("M", "A")
+				table[aa][k] = r.randf_range(0.4, 1.0) * dir
+	eff = table
+	hue_base = r.randf() * 360.0
+	_cache.clear()
 
 
 ## One CRISPR edit at base p: "rep" replaces it with b, "ins" inserts b after it, "del" cuts it.

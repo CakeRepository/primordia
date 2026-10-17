@@ -6,6 +6,11 @@ insertions, deletions, duplicated segments) take your line somewhere you did not
 species evolve under the same rules. A CRISPR-style gene lab lets you edit your germline, the DNA your
 offspring inherit.
 
+Every world is generated from a single seed and is alien in its own way: terrain shape, biome colours, sky,
+star type, moons, gravity, radiation, fertility, how creatures are proportioned, and even the genetic code. The
+same DNA builds a different body on a different planet. The HUD shows the planet's name and seed; the same seed
+always gives the same world.
+
 Godot 4.3+ (GDScript). The design was prototyped as a single-page web sandbox first; this repo is the real game.
 
 ## Run
@@ -53,9 +58,13 @@ mutation. Charges refill slowly while the world runs.
 ## How it works
 
 - `scripts/genome.gd`: DNA string to phenotype. Genes start at `ATG` and end at a stop codon. Codons map to amino
-  acids with the standard genetic code and each amino acid adds a fixed effect vector (size, speed, senses, spikes,
-  camouflage, heat tolerance, metabolism, carnivory, aquatic, limb count, hue). Also founder generation, mutation
+  acids and each amino acid adds a fixed effect vector (size, speed, senses, spikes, camouflage, heat tolerance,
+  metabolism, carnivory, aquatic, limb count, hue). Earth's code is the default; `use_biochemistry(seed)` installs
+  an alien one (start and stop codons are kept, everything else is reassigned). Also founder generation, mutation
   and CRISPR edits.
+- `scripts/planet_gen.gd`: everything that follows from a world seed (name, terrain, palette, sky, star, moons,
+  gravity, radiation, fertility, climate, relief, body proportions, biochemistry). Deterministic, and re-rolls
+  until the world has a sensible share of land and a viable founder.
 - `scripts/world.gd`: the simulation, in 2D sim coordinates: terrain (ocean, coast, forest, desert, snow), food,
   land and sea predators, creatures, species clustering. The player is an ordinary creature that moves by input
   and reproduces on demand; when it dies, control passes to the nearest member of its lineage.
@@ -74,6 +83,7 @@ godot --headless --path . -s res://scripts/test_genome.gd
 godot --headless --path . -s res://scripts/test_sim.gd
 godot --headless --path . -s res://scripts/test_main.gd
 godot --headless --path . -s res://scripts/test_main3d.gd
+godot --headless --path . -s res://scripts/test_worlds.gd
 ```
 
 ## Known gaps and next steps
