@@ -77,10 +77,15 @@ func _ready() -> void:
 	var err := OK
 	match mode:
 		"dedicated":
-			err = session.start_dedicated(seed, port, _cfg("server_name", ""))
+			err = session.start_dedicated(seed, port, _cfg("server_name", ""), _cfg("world_name", ""))
 			if err == OK:
 				var pl := session.world.planet
 				print("[server] %s on port %d. Planet %s (seed %d): %s." % [session.server_name, port, pl.name, pl.seed, pl.describe()])
+				if session.save_path == "":
+					print("[server] This world is not saved. Start with --world NAME to keep it.")
+				else:
+					print("[server] %s world %s (%s), saved every minute and on exit." % [
+						"Resumed" if session.world.tick > 0 else "New", _cfg("world_name", ""), ProjectSettings.globalize_path(session.save_path)])
 				print("[server] Players join with: godot --path . -- --join <this machine's address>:%d" % port)
 		"host":
 			err = session.start_host(seed, who, port)

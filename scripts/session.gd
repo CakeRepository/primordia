@@ -18,6 +18,8 @@ const MAX_PLAYERS := 16
 const MAX_CHARGES := 12
 const MAX_STEPS_PER_FRAME := 8
 const DEFAULT_STATUS := "Edits change your germline: the DNA your offspring inherit."
+const SAVE_FORMAT := 1
+const AUTOSAVE_SECONDS := 60.0
 
 signal world_ready
 signal said(text: String)
@@ -58,6 +60,9 @@ var _acc := 0.0
 var _snap_acc := 0.0
 var _snap_n := 0
 var _server_id := ""
+var save_path := "" # a dedicated server started with --world keeps its world here
+var _saved_players := {} # player name -> {germline, charges}, for players who come back
+var _autosave_t := 0.0
 
 # client
 var _dna_table := {} # dna id -> dna string
@@ -85,13 +90,47 @@ func start_host(seed: int, player_name: String, port: int) -> Error:
 	return err
 
 
-func start_dedicated(seed: int, port: int, title: String) -> Error:
+## `world_name` non-empty: load that saved world if it exists (its seed wins over `seed`) and keep
+## saving it; empty: run a fresh world that is not saved.
+func start_dedicated(seed: int, port: int, title: String, world_name := "") -> Error:
 	var err := _listen(port)
-	if err == OK:
-		_start_server(seed, "", false)
-		server_name = title if title != "" else "Primordia server"
-		_announce(port)
-	return err
+	if err != OK:
+		return err
+	var saved := {}
+	if world_name != "":
+		save_path = "user://worlds/%s.world" % world_name.to_lower().validate_filename().replace(" ", "-")
+		saved = _read_save(save_path)
+	_start_server(saved.get("seed", seed), "", false, saved)
+	server_name = title if title != "" else "Primordia server"
+	_announce(port)
+	return OK
+
+
+static func _read_save(path: String) -> Dictionary:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {}
+	var d = f.get_var()
+	return d if d is Dictionary and d.get("format") == SAVE_FORMAT else {}
+
+
+func save_world() -> Error:
+	if save_path == "" or world == null:
+		return ERR_UNCONFIGURED
+	for peer in _players: # players still online keep their lab state too
+		_saved_players[_players[peer]["name"]] = {"germline": _players[peer]["germline"], "charges": _players[peer]["charges"]}
+	DirAccess.make_dir_recursive_absolute(save_path.get_base_dir())
+	var f := FileAccess.open(save_path, FileAccess.WRITE)
+	if f == null:
+		return FileAccess.get_open_error()
+	f.store_var({"format": SAVE_FORMAT, "seed": world.planet.seed, "world": world.to_save(),
+		"owners": _owners, "next_owner": _next_owner, "players": _saved_players})
+	return OK
+
+
+func _exit_tree() -> void:
+	if is_server and save_path != "":
+		save_world()
 
 
 func start_client(address: String, port: int, player_name: String) -> Error:
@@ -131,13 +170,19 @@ func _quick_timeout(peer_id: int) -> void:
 		enet.get_peer(peer_id).set_timeout(32, 2000, 6000)
 
 
-func _start_server(seed: int, player_name: String, local: bool) -> void:
+func _start_server(seed: int, player_name: String, local: bool, saved := {}) -> void:
 	is_server = true
 	has_local_player = local
 	me = 1
 	_server_id = str(randi())
 	world = _make_world(seed if seed != 0 else randi())
-	world.populate()
+	if saved.is_empty():
+		world.populate()
+	else:
+		world.from_save(saved["world"])
+		_owners = saved["owners"]
+		_next_owner = saved["next_owner"]
+		_saved_players = saved["players"]
 	world.planet_event.connect(func(t): _emit_all("msg", [t]))
 	world.meteor_incoming.connect(func(p): _emit_all("meteor", [p]))
 	world.meteor_impact.connect(func(p, k): _emit_all("impact", [p, k]))
@@ -251,8 +296,10 @@ func _add_player(peer: int, player_name: String) -> void:
 		_next_owner += 1
 	var owner: int = _owners[n]
 	var resumed := world.lineage_count(owner) > 0 # they played here before and their line lives on
-	var c := world.join(peer, owner, Genome.founder(world.rng))
-	_players[peer] = {"name": n, "owner": owner, "germline": c.dna, "charges": MAX_CHARGES, "status": DEFAULT_STATUS}
+	var back: Dictionary = _saved_players.get(n, {})
+	var c := world.join(peer, owner, back.get("germline", Genome.founder(world.rng)))
+	_players[peer] = {"name": n, "owner": owner, "germline": back.get("germline", c.dna),
+		"charges": back.get("charges", MAX_CHARGES), "status": DEFAULT_STATUS}
 	names[peer] = n
 	_send_lab(peer, 0)
 	_send_roster()
@@ -269,6 +316,7 @@ func _on_peer_left(peer: int) -> void:
 	if not _players.has(peer):
 		return
 	var n: String = _players[peer]["name"]
+	_saved_players[n] = {"germline": _players[peer]["germline"], "charges": _players[peer]["charges"]}
 	world.leave(peer)
 	_players.erase(peer)
 	_known.erase(peer)
@@ -385,6 +433,11 @@ func _process(delta: float) -> void:
 		_send_snapshots()
 	if world.tick % 3000 == 0 and world.tick > 0:
 		_prune_dna()
+	if save_path != "":
+		_autosave_t += delta
+		if _autosave_t >= AUTOSAVE_SECONDS:
+			_autosave_t = 0.0
+			save_world()
 
 
 # ---------------------------------------------------------------- snapshots

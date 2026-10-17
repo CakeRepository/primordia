@@ -1,7 +1,7 @@
 extends Node
 ## How this run of the game was started (autoload "Launch"). The menu fills it in; the command
 ## line can too, which is how people run servers:
-##   godot --headless --path . -- --server [--port 24565] [--seed 42] [--name "My world"]
+##   godot --headless --path . -- --server [--port 24565] [--seed 42] [--name "My world"] [--world mine]
 ##   godot --path . -- --join 192.168.1.20[:24565] [--name Alice]
 ##   godot --path . -- --host [--port 24565] [--seed 42] [--name Alice]
 ##   godot --path . -- --solo [--seed 42]
@@ -14,6 +14,7 @@ var port := DEFAULT_PORT
 var address := "127.0.0.1"
 var player_name := "Player"
 var server_name := ""
+var world_name := "" # dedicated servers: load and keep saving this world
 var from_cli := false # started straight into a game from the command line
 
 
@@ -43,6 +44,9 @@ func _init() -> void:
 				i += 1
 			"--seed":
 				seed = next.to_int()
+				i += 1
+			"--world":
+				world_name = next
 				i += 1
 			"--name":
 				player_name = next

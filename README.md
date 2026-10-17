@@ -31,8 +31,11 @@ so only live state (creatures, food, climate, meteors) travels over the network.
   network see your world in their Join list automatically.
 - **Dedicated server**, headless, for a machine that just runs the world:
   ```
-  godot --headless --path . -- --server --port 24565 --seed 42 --name "My world"
+  godot --headless --path . -- --server --port 24565 --seed 42 --name "My world" --world myworld
   ```
+  With `--world NAME` the server keeps that world: it is saved every minute and on exit (under Godot's
+  user data folder, `worlds/NAME.world`) and resumed on the next start, including returning players'
+  lineages and gene labs. Without it the server runs a fresh, unsaved world.
 - **Join** from the title screen (pick a LAN world or type `address:port`), or straight from the command line:
   ```
   godot --path . -- --join 192.168.1.20:24565 --name Alice
@@ -117,6 +120,7 @@ godot --headless --path . -s res://scripts/test_main.gd
 godot --headless --path . -s res://scripts/test_main3d.gd
 godot --headless --path . -s res://scripts/test_worlds.gd
 godot --headless --path . -s res://scripts/test_net.gd
+godot --headless --path . -s res://scripts/test_save.gd
 ```
 
 `test_net.gd` is end to end: it hosts a world and has a second game process join it, then starts a
@@ -125,7 +129,7 @@ germline over the network and watches another player arrive.
 
 ## Known gaps and next steps
 
-- Servers do not save their worlds yet; a restarted server starts a fresh planet from its seed.
+- Only dedicated servers save their worlds; solo and hosted worlds end when you leave.
 - Internet play needs a forwarded port (no NAT traversal or relay), and every player receives the whole
   world; sending only nearby creatures would cut bandwidth.
 

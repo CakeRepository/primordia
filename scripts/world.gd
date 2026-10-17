@@ -836,6 +836,63 @@ func _sample() -> void:
 		history.pop_front()
 
 
+# ---------------------------------------------------------------- saving
+
+## Everything that changes as the world runs (the planet itself comes back from its seed).
+func to_save() -> Dictionary:
+	return {
+		"tick": tick, "temp": temp, "era": era, "era_left": era_left, "mut_boost": mut_boost,
+		"next_id": next_id, "incoming": incoming, "craters": craters,
+		"creatures": creatures.map(func(c: Creature): return [c.id, c.dna, c.pos, c.vel, c.e, c.age, c.gen, c.owner, c.wa]),
+		"foods": foods.map(func(f: Food): return [f.pos, f.aq]),
+		"preds": preds.map(func(p: Predator): return [p.pos, p.vel, p.aq, p.stun, p.wa]),
+	}
+
+
+func from_save(d: Dictionary) -> void:
+	_reset()
+	dynamic = true
+	tick = d["tick"]
+	temp = d["temp"]
+	era = d["era"]
+	era_left = d["era_left"]
+	mut_boost = d["mut_boost"]
+	next_id = d["next_id"]
+	incoming = d["incoming"]
+	craters = d["craters"]
+	sea_level = SEA + (temp - climate_base) * SEA_SWING
+	for a in d["creatures"]:
+		var c := Creature.new()
+		c.id = a[0]
+		c.dna = a[1]
+		c.g = Genome.decode(c.dna)
+		c.r = Genome.radius(c.g)
+		c.pos = a[2]
+		c.vel = a[3]
+		c.e = a[4]
+		c.age = a[5]
+		c.gen = a[6]
+		c.owner = a[7]
+		c.wa = a[8]
+		creatures.append(c)
+	for a in d["foods"]:
+		var f := Food.new()
+		f.pos = a[0]
+		f.aq = a[1]
+		foods.append(f)
+	for a in d["preds"]:
+		var p := Predator.new()
+		p.pos = a[0]
+		p.vel = a[1]
+		p.aq = a[2]
+		p.stun = a[3]
+		p.wa = a[4]
+		preds.append(p)
+	_reshape_coasts()
+	_count_species()
+	running = not creatures.is_empty()
+
+
 func max_generation() -> int:
 	var m := 0
 	for c in creatures:
