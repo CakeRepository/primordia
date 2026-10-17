@@ -14,6 +14,10 @@ func _init() -> void:
 	var f := Genome.decode(dna)
 	print("founder len=%d genes=%d limbs=%d aqua=%.2f" % [f["len"], f["genes"], f["limbs"].size(), f["aqua"]])
 	ok = ok and f["genes"] >= 1 and f["aqua"] < 0.35
+	# founder() must find a candidate that passes its own filter, not fall back
+	for k in ["size", "speed", "sense", "temp", "metab"]:
+		ok = ok and f[k] > 0.25 and f[k] < 0.75
+	ok = ok and f["spikes"] < 0.45 and f["diet"] < 0.35
 	var m := dna
 	for _i in 200:
 		m = Genome.mutate(m, 1.0, rng)

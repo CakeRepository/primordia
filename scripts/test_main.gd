@@ -29,5 +29,25 @@ func _init() -> void:
 	m.world.wild_seed()
 	m._refresh()
 	print("pop %d charges %d released %s" % [m.world.creatures.size(), m.charges, str(m.released)])
-	print("PASS" if m.released and m.world.tick > 100 else "FAIL")
-	quit(0)
+	var ok: bool = m.released and m.world.tick > 100
+	# sliders must not take keyboard focus, or they swallow the gene lab's arrow keys
+	for s in m.find_children("*", "HSlider", true, false):
+		ok = ok and (s as HSlider).focus_mode == Control.FOCUS_NONE
+	# dragging past the map edge must not build up a hidden camera offset
+	var cam: Camera2D = m.cam
+	var drag := InputEventMouseMotion.new()
+	drag.relative = Vector2(-5000, 0)
+	m._pressed = true
+	m._dragging = true
+	m._unhandled_input(drag)
+	m._pressed = false
+	var half: Vector2 = m.get_viewport_rect().size / cam.zoom / 2.0
+	ok = ok and cam.position.x <= World.WW - half.x + 0.01
+	print("cam after drag %s (max x %.1f)" % [cam.position, World.WW - half.x])
+	# the levers column and the gene lab must not overlap
+	var panels := []
+	for c in m.find_children("*", "PanelContainer", true, false):
+		panels.append((c as Control).get_global_rect())
+	ok = ok and panels.size() == 2 and not panels[0].intersects(panels[1])
+	print("PASS" if ok else "FAIL")
+	quit(0 if ok else 1)

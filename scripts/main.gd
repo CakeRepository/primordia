@@ -2,6 +2,7 @@ extends Node2D
 ## Camera, input and HUD. Everything is built in code so the scene file stays trivial.
 
 const MAX_CHARGES := 12
+const SIDE_W := 260 # width of the levers column on the right
 
 var world: World
 var cam: Camera2D
@@ -38,6 +39,7 @@ func _ready() -> void:
 	var vp := get_viewport_rect().size
 	var z := maxf(vp.x / World.WW, vp.y / World.WH)
 	cam.zoom = Vector2(z, z)
+	get_viewport().size_changed.connect(func(): _zoom(1.0))
 	lab_dna = Genome.founder(world.rng)
 	lab_orig = lab_dna
 	world.extinct.connect(_on_extinct)
@@ -53,12 +55,15 @@ func _build_hud() -> void:
 	stats_label.position = Vector2(14, 10)
 	layer.add_child(stats_label)
 
+	# Levers take a full-height column on the right; the gene lab stops at its left edge.
 	var right := PanelContainer.new()
 	right.anchor_left = 1.0
 	right.anchor_right = 1.0
-	right.offset_left = -270
+	right.anchor_bottom = 1.0
+	right.offset_left = -SIDE_W - 10
 	right.offset_right = -10
 	right.offset_top = 10
+	right.offset_bottom = -10
 	layer.add_child(right)
 	var box := VBoxContainer.new()
 	right.add_child(box)
@@ -72,10 +77,11 @@ func _build_hud() -> void:
 	_button(box, "Meteor strike", func(): world.meteor())
 	_button(box, "Mutagen storm", func(): world.storm())
 	_button(box, "Wild seed", func(): world.wild_seed())
-	_button(box, "New world", func(): world.gen_world(); world.foods.clear())
+	_button(box, "New world", world.new_world)
 	info_label = Label.new()
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info_label.custom_minimum_size = Vector2(240, 0)
+	info_label.add_theme_font_size_override("font_size", 14)
 	box.add_child(info_label)
 
 	var lab := PanelContainer.new()
@@ -83,7 +89,7 @@ func _build_hud() -> void:
 	lab.anchor_bottom = 1.0
 	lab.anchor_right = 1.0
 	lab.offset_left = 10
-	lab.offset_right = -10
+	lab.offset_right = -SIDE_W - 20
 	lab.offset_top = -250
 	lab.offset_bottom = -10
 	layer.add_child(lab)
@@ -91,6 +97,7 @@ func _build_hud() -> void:
 	lab_text.bbcode_enabled = true
 	lab_text.scroll_active = false
 	lab_text.fit_content = false
+	lab_text.autowrap_mode = TextServer.AUTOWRAP_OFF
 	lab_text.custom_minimum_size = Vector2(0, 230)
 	lab.add_child(lab_text)
 
@@ -105,6 +112,7 @@ func _slider(parent: Control, key: String, title: String, v: float, lo: float, h
 	s.step = 0.01
 	s.value = v
 	s.custom_minimum_size = Vector2(240, 18)
+	s.focus_mode = Control.FOCUS_NONE # otherwise it keeps the arrow keys the gene lab needs
 	s.value_changed.connect(func(x: float): _set_level(key, x))
 	parent.add_child(s)
 	_set_level(key, v)
@@ -128,6 +136,7 @@ func _button(parent: Control, text: String, cb: Callable) -> void:
 
 func _on_extinct() -> void:
 	released = false
+	drop_mode = false
 	status = "Extinction. Edit the DNA and press Enter to try again."
 
 
@@ -165,8 +174,10 @@ func _edit(kind: String, b := "") -> void:
 
 func _lab_bbcode() -> String:
 	var colors := {"A": "6df2c2", "T": "ff8f5a", "G": "6ab7ff", "C": "f2d36d"}
-	var lo := maxi(0, cursor - 70)
-	var hi := mini(lab_dna.length(), cursor + 70)
+	# As many bases as fit on one line (about 11 px each), centred on the cursor.
+	var span := maxi(20, int(lab_text.size.x / 11.0))
+	var lo := clampi(cursor - span / 2, 0, maxi(0, lab_dna.length() - span))
+	var hi := mini(lab_dna.length(), lo + span)
 	var s := "[b]GENE LAB[/b]  base %d of %d  |  %d / %d Cas9 charges\n" % [cursor + 1, lab_dna.length(), charges, MAX_CHARGES]
 	for i in range(lo, hi):
 		var ch := lab_dna[i]
@@ -176,9 +187,12 @@ func _lab_bbcode() -> String:
 		s += t
 	s += "\n"
 	var g := Genome.decode(lab_dna)
+	# Two traits per row, in a table so the bars line up despite the proportional font.
+	s += "[table=4]"
 	for k in Genome.KEYS:
 		var n := roundi(g[k] * 20.0)
-		s += "%-15s %s%s\n" % [Genome.LABELS[k], "█".repeat(n), "░".repeat(20 - n)]
+		s += "[cell]%s   [/cell][cell]%s%s      [/cell]" % [Genome.LABELS[k], "█".repeat(n), "░".repeat(20 - n)]
+	s += "[/table]\n"
 	var hab := "lives in water" if g["aqua"] > 0.65 else ("amphibious" if g["aqua"] > 0.35 else "lives on land")
 	s += "%d genes, %d limbs, %s\n[color=#7fa39d]%s[/color]" % [g["genes"], g["limbs"].size(), hab, status]
 	return s
@@ -224,6 +238,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _dragging or mm.position.distance_to(_drag_start) > 5.0:
 			_dragging = true
 			cam.position -= mm.relative / cam.zoom
+			_clamp_camera()
 	elif event is InputEventKey and event.pressed and not event.echo:
 		_key(event as InputEventKey)
 
@@ -233,6 +248,18 @@ func _zoom(f: float) -> void:
 	var mz := maxf(vp.x / World.WW, vp.y / World.WH)
 	var z := clampf(cam.zoom.x * f, mz, 5.0)
 	cam.zoom = Vector2(z, z)
+	_clamp_camera()
+
+
+## Keep cam.position where the view really is. Camera2D limits only clamp what is drawn, so
+## dragging past an edge used to build up a hidden offset: later drags did nothing until it
+## was undone, and the next zoom made the view jump.
+func _clamp_camera() -> void:
+	var half := get_viewport_rect().size / cam.zoom / 2.0
+	var hi := Vector2(World.WW, World.WH) - half
+	cam.position = Vector2(
+		clampf(cam.position.x, half.x, hi.x) if half.x < hi.x else World.WW / 2.0,
+		clampf(cam.position.y, half.y, hi.y) if half.y < hi.y else World.WH / 2.0)
 
 
 func _click() -> void:
