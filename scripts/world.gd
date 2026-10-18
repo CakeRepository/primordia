@@ -286,7 +286,7 @@ func populate(natives := 4, per_species := 15) -> void:
 		var dna := Genome.founder(rng)
 		var home := rand_point(false)
 		for _i in per_species:
-			spawn(dna, near_land(home, 80.0))
+			spawn(dna, near_like(home, 80.0))
 	dynamic = true
 	era = 2
 	era_left = rng.randi_range(2000, 4000)
@@ -305,10 +305,10 @@ func populate(natives := 4, per_species := 15) -> void:
 func join(peer: int, owner: int, dna: String, kin := 14) -> Creature:
 	var c := _heir_of(owner, Vector2(WW, WH) / 2.0)
 	if c == null:
-		c = spawn(dna, rand_point(false))
+		c = spawn(dna, spawn_point(Genome.decode(dna)))
 		c.owner = owner
 		for _i in kin:
-			spawn(dna, near_land(c.pos, 60.0))
+			spawn(dna, near_like(c.pos, 60.0))
 	c.driver = peer
 	players[peer] = c
 	running = true
@@ -324,13 +324,27 @@ func leave(peer: int) -> void:
 	blocked.erase(peer)
 
 
-## A random land point around p, or p itself if none turns up.
-func near_land(p: Vector2, spread: float) -> Vector2:
+## A random point around p on the same kind of ground (land or water), or p itself.
+func near_like(p: Vector2, spread: float) -> Vector2:
+	var wet := is_wet(p)
 	for _t in 30:
 		var q := (p + Vector2(rng.randfn(0, spread), rng.randfn(0, spread))).clamp(Vector2.ZERO, Vector2(WW, WH))
-		if not is_wet(q):
+		if is_wet(q) == wet:
 			return q
 	return p
+
+
+## Where a new lineage starts: floaters in the shallows by a coast (the primordial soup),
+## swimmers out at sea, walkers on land.
+func spawn_point(g: Dictionary) -> Vector2:
+	if not Genome.floats(g):
+		return rand_point(g["aqua"] > 0.65)
+	for _t in 300:
+		var p := rand_point(true)
+		for d in [Vector2(80, 0), Vector2(-80, 0), Vector2(0, 80), Vector2(0, -80)]:
+			if not is_wet(p + d):
+				return p
+	return rand_point(true)
 
 
 func drop(dna: String, pos: Vector2) -> void:
@@ -396,17 +410,24 @@ func pick(pos: Vector2, max_dist: float) -> Creature:
 	return found
 
 
+## Floaters (limbless bodies) drift over anything, so no ground is lethal to them.
 func too_wet(g: Dictionary, wet: bool) -> bool:
+	if Genome.floats(g):
+		return false
 	return g["aqua"] < 0.35 if wet else g["aqua"] > 0.65
 
 
 func stress(g: Dictionary, wet: bool) -> float:
+	if Genome.floats(g):
+		return 0.0
 	if wet:
 		return 1.2 if g["aqua"] < 0.35 else (0.03 if g["aqua"] < 0.65 else 0.0)
 	return 1.2 if g["aqua"] > 0.65 else (0.03 if g["aqua"] > 0.35 else 0.0)
 
 
 func can_eat(g: Dictionary, f: Food) -> bool:
+	if Genome.floats(g):
+		return true
 	return g["aqua"] > 0.35 if f.aq else g["aqua"] < 0.65
 
 
@@ -637,6 +658,8 @@ func _step_creature(c: Creature, rate: float, born: Array[Creature]) -> void:
 	var r := c.r
 	var limbs: int = g["limbs"].size()
 	var vmax: float = (0.6 + g["speed"] * 1.8 + limbs * 0.07) * (0.8 + g["metab"] * 0.4)
+	if limbs == 0:
+		vmax *= 0.55 # drifting is slow; limbs are how bodies get fast
 	var is_player := c.driver != 0
 	var dir := Vector2.ZERO
 	var prey: Creature = null
@@ -770,7 +793,8 @@ func _step_predator(p: Predator) -> void:
 			continue
 		var rg: float = 150.0 * (1.0 - c.g["camo"] * 0.7)
 		var d := c.pos.distance_squared_to(p.pos)
-		if d < rg * rg and d < best and ((c.g["aqua"] > 0.35) if p.aq else (c.g["aqua"] < 0.65)):
+		var prey_here: bool = (c.g["aqua"] > 0.35 or Genome.floats(c.g)) if p.aq else c.g["aqua"] < 0.65
+		if d < rg * rg and d < best and prey_here:
 			best = d
 			tgt = c
 	var dir := Vector2.ZERO

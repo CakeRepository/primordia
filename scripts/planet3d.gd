@@ -89,6 +89,16 @@ func rest_point(p: Vector2, lift: float) -> Vector3:
 	return Vector3(p.x * S, y + lift if y > w else w, p.y * S)
 
 
+## Where a creature's body centre sits: `lift` metres over the ground or, for floaters, over
+## whichever is higher of ground and sea; walkers in water float at the surface.
+func creature_point(p: Vector2, lift: float, floating: bool) -> Vector3:
+	var y := ground_y(p)
+	var w := water_y()
+	if floating:
+		return Vector3(p.x * S, maxf(y, w) + lift, p.y * S)
+	return Vector3(p.x * S, y + lift if y > w else w, p.y * S)
+
+
 static func body_color(g: Dictionary) -> Color:
 	# Camouflaged bodies are duller rather than transparent, so they still sort correctly.
 	return Color.from_hsv(g["hue"] / 360.0, 0.75 * (1.0 - g["camo"] * 0.6), 0.9 - g["diet"] * 0.25 - g["camo"] * 0.2)
@@ -238,7 +248,9 @@ func update_life(skip: World.Creature) -> void:
 			continue
 		var g := c.g
 		var rad := c.r * S
-		var at := rest_point(c.pos, rad)
+		var floating := Genome.floats(g)
+		# floaters hover and bob, each to its own rhythm
+		var at := creature_point(c.pos, rad * (1.4 + 0.25 * sin(_time * 2.0 + c.id)) if floating else rad, floating)
 		var head := c.vel.angle()
 		var col := body_color(g)
 		# local +X is the heading; body_shape is (width, height, length)

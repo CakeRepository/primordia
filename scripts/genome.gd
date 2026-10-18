@@ -94,7 +94,7 @@ static func decode(dna: String) -> Dictionary:
 	for k in 9:
 		var key: String = KEYS[k]
 		g[key] = 0.5 + 0.5 * tanh((sum[k] + BIAS.get(key, 0.0)) * 0.3)
-	var count := clampi(roundi(2.0 + sum[9]), 0, 12)
+	var count := clampi(roundi(sum[9]), 0, 12) # an empty genome is a limbless blob
 	var limbs: Array = []
 	for q in count:
 		var f := fposmod(absf(sin(q * 12.9 + sum[9] * 3.0) * 43758.0), 1.0)
@@ -105,6 +105,18 @@ static func decode(dna: String) -> Dictionary:
 		_cache.clear()
 	_cache[dna] = g
 	return g
+
+
+## Limbless bodies float: they drift anywhere, over water or land, but slowly.
+static func floats(g: Dictionary) -> bool:
+	return g["limbs"].size() == 0
+
+
+static func is_dna(s: String) -> bool:
+	for ch in s:
+		if not ch in BASES:
+			return false
+	return true
 
 
 static func random_base(rng: RandomNumberGenerator) -> String:
@@ -232,15 +244,71 @@ static func edit(dna: String, kind: String, p: int, b: String, rng: RandomNumber
 				return {"dna": dna, "cursor": p, "msg": "Genome too short to cut.", "done": false}
 			d = d.substr(0, p) + d.substr(p + 1)
 			cursor = mini(p, d.length() - 1)
-	var msg := "Edit made."
-	if rng.randf() < OFF_TARGET:
-		var q := rng.randi() % d.length()
-		var nb := random_base(rng)
-		while nb == d[q]:
-			nb = random_base(rng)
-		d = d.substr(0, q) + nb + d.substr(q + 1)
-		msg = "Off-target cut at base %d." % (q + 1)
-	return {"dna": d, "cursor": cursor, "msg": msg, "done": true}
+	var hit := off_target(d, rng)
+	var msg := "Edit made." if hit[1] < 0 else "Off-target cut at base %d." % (hit[1] + 1)
+	return {"dna": hit[0], "cursor": cursor, "msg": msg, "done": true}
+
+
+## Every lab edit risks a stray substitution elsewhere. Returns [dna, position hit or -1].
+static func off_target(dna: String, rng: RandomNumberGenerator) -> Array:
+	if rng.randf() >= OFF_TARGET:
+		return [dna, -1]
+	var q := rng.randi() % dna.length()
+	var nb := random_base(rng)
+	while nb == dna[q]:
+		nb = random_base(rng)
+	return [dna.substr(0, q) + nb + dna.substr(q + 1), q]
+
+
+## A single mutation as data, so a client can propose one and the server can check it:
+## {"op": "sub"|"ins"|"del"|"dup", "pos": int, "bases": String (sub, ins), "len": int (del, dup)}.
+## Returns the mutated DNA, or "" when `m` is not a valid single change to `dna`.
+static func apply_mutation(dna: String, m: Dictionary) -> String:
+	var n := dna.length()
+	var p = m.get("pos")
+	if typeof(p) != TYPE_INT or p < 0 or p >= n:
+		return ""
+	var b = m.get("bases", "")
+	var l = m.get("len", 0)
+	match m.get("op"):
+		"sub":
+			if typeof(b) == TYPE_STRING and b.length() == 1 and is_dna(b) and b != dna[p]:
+				return dna.substr(0, p) + b + dna.substr(p + 1)
+		"ins":
+			if typeof(b) == TYPE_STRING and b.length() >= 1 and b.length() <= 30 and is_dna(b) and n + b.length() <= MAX_LEN:
+				return dna.substr(0, p + 1) + b + dna.substr(p + 1)
+		"del":
+			if typeof(l) == TYPE_INT and l >= 1 and l <= 3 and p + l <= n and n - l >= 30:
+				return dna.substr(0, p) + dna.substr(p + l)
+		"dup":
+			if typeof(l) == TYPE_INT and l >= 3 and l <= 30 and p + l <= n and n + l <= MAX_LEN:
+				return dna.substr(0, p + l) + dna.substr(p, l) + dna.substr(p + l)
+	return ""
+
+
+## One random mutation of `dna`: mostly point changes, sometimes small insertions or deletions,
+## a duplicated stretch, or a whole new gene.
+static func random_mutation(dna: String, rng: RandomNumberGenerator) -> Dictionary:
+	var n := dna.length()
+	var p := rng.randi() % n
+	var r := rng.randf()
+	if r < 0.45:
+		var b := random_base(rng)
+		while b == dna[p]:
+			b = random_base(rng)
+		return {"op": "sub", "pos": p, "bases": b}
+	if r < 0.6:
+		var s := ""
+		for _i in 1 + rng.randi() % 3:
+			s += random_base(rng)
+		return {"op": "ins", "pos": p, "bases": s}
+	if r < 0.72:
+		var l := 1 + rng.randi() % 3
+		return {"op": "del", "pos": rng.randi() % maxi(1, n - l), "len": l}
+	if r < 0.85:
+		var l := mini(6 + rng.randi() % 25, n - 1)
+		return {"op": "dup", "pos": rng.randi() % maxi(1, n - l), "len": l}
+	return {"op": "ins", "pos": p, "bases": random_gene(rng, 2 + rng.randi() % 4)}
 
 
 static func _poisson(rng: RandomNumberGenerator, l: float) -> int:

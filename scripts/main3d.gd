@@ -5,7 +5,7 @@ extends Node3D
 ## A Session runs the world (in this process for solo, host and dedicated server; elsewhere for
 ## a client); this node draws it and handles input and the HUD. A dedicated server builds no view.
 
-const HELP := "WASD move   Right-drag look   Wheel zoom   R lay offspring   Tab gene lab   1/2/3 speed   P pause   Esc leave"
+const HELP := "WASD move   Right-drag look   Wheel zoom   R lay offspring   Tab evolve   1/2/3 speed   P pause   Esc leave"
 const MENU_SCENE := "res://scenes/menu.tscn"
 
 var session: Session
@@ -21,6 +21,7 @@ var dedicated := false
 
 var cursor := 0
 var lab_open := false
+var lab_bases := false # the gene lab shows raw bases (advanced) instead of evolve options
 var yaw := 0.7
 var pitch := 0.45
 var zoom := 1.0
@@ -33,6 +34,17 @@ var _leaving := false # the "leave this world?" prompt is up
 var _lost := "" # why the connection to the server ended
 var _tags := {} # peer -> Label3D over other players' creatures
 var _status_t := 0.0
+var _rng := RandomNumberGenerator.new()
+var _options: Array = [] # mutation options shown in the evolve view
+var _options_for := "" # the germline those options were made for
+var _plan := "" # body plan of the creature you play, for milestone messages
+var _auto_origin := false # pick the first origin without asking (headless bots and tests)
+var picker: Control
+var _picker_title: Label
+var _reroll_button: Button
+var _choices: Array[String] = []
+var _cards: Array = [] # per card: [CreatureModel, Camera3D, title Label, RichTextLabel, PanelContainer]
+var _rerolls := 3
 
 var stats_label: Label
 var climate_label: Label
@@ -61,8 +73,18 @@ func _ready() -> void:
 	session.meteor_seen.connect(_on_meteor_seen)
 	session.impacted.connect(_on_impact)
 	session.died.connect(_on_died)
-	session.reborn.connect(func(): _cam_placed = false)
+	_rng.randomize()
+	_auto_origin = _cfg("auto_origin", DisplayServer.get_name() == "headless")
+	session.origin_needed.connect(_on_origin_needed)
+	session.reborn.connect(func():
+		_cam_placed = false
+		_plan = ""
+		_rerolls = 3
+		if picker != null:
+			picker.visible = false)
 	session.lab_changed.connect(func():
+		if session.germline != _options_for:
+			_refresh_options()
 		if session.cursor_hint >= 0:
 			cursor = session.cursor_hint
 		cursor = clampi(cursor, 0, maxi(0, session.germline.length() - 1)))
@@ -105,11 +127,24 @@ func _ready() -> void:
 			get_tree().quit(1)
 
 
+func _on_origin_needed() -> void:
+	if _auto_origin:
+		var options := Traits.origins(_rng, 1)
+		if not options.is_empty():
+			session.choose_origin(options[0])
+	# otherwise _process opens the picker once the planet is on screen
+
+
+func _refresh_options() -> void:
+	_options_for = session.germline
+	_options = Traits.mutation_options(session.germline, _rng) if session.germline != "" else []
+
+
 func _cfg(key: String, default: Variant) -> Variant:
 	if config.has(key):
 		return config[key]
 	var launch := get_node_or_null("/root/Launch")
-	return launch.get(key) if launch != null else default
+	return launch.get(key) if launch != null and key in launch else default
 
 
 func _on_world_ready() -> void:
@@ -187,6 +222,12 @@ func _process(delta: float) -> void:
 		_update_hud(delta)
 		return
 	var p := session.my_creature()
+	if session.needs_origin and not _auto_origin and not picker.visible:
+		_open_picker()
+	if picker.visible:
+		for i in _cards.size(): # sway, but keep the face (eyes, mouth) toward the viewer
+			_cards[i][0].rotation.y = PI + sin(Time.get_ticks_msec() * 0.0008 + i) * 0.8
+			_cards[i][0].animate(Vector2.ZERO, delta)
 	session.send_input(_move_input() if p != null and not lab_open and not _leaving else Vector2.ZERO)
 	planet.update_life(p)
 	model.visible = p != null
@@ -194,7 +235,11 @@ func _process(delta: float) -> void:
 		if p.dna != _model_dna:
 			_model_dna = p.dna
 			model.build(p.g, p.r * Planet3D.S, world.planet.body_shape)
-		model.position = planet.rest_point(p.pos, model.stand)
+		model.position = planet.creature_point(p.pos, model.stand, model.floating)
+		var plan := Traits.body_plan(p.g)
+		if _plan != "" and plan != _plan:
+			_say("Your line has become a %s (%s)." % [plan, Traits.body_plan_text(p.g)])
+		_plan = plan
 		model.animate(p.vel, delta * session.speed)
 		_focus = model.position
 	planet.update_planet(delta)
@@ -263,7 +308,7 @@ func _update_tags() -> void:
 			_tags[peer] = tag
 		var c: World.Creature = live[peer]
 		_tags[peer].text = session.names.get(peer, "?")
-		_tags[peer].position = planet.rest_point(c.pos, c.r * Planet3D.S) + Vector3.UP * (c.r * Planet3D.S * 2.0 + 0.8)
+		_tags[peer].position = planet.creature_point(c.pos, c.r * Planet3D.S, Genome.floats(c.g)) + Vector3.UP * (c.r * Planet3D.S * 2.0 + 0.8)
 
 
 # ---------------------------------------------------------------- input
@@ -293,9 +338,20 @@ func _key(k: InputEventKey) -> void:
 		elif k.keycode == KEY_ESCAPE and _lost == "":
 			_leaving = false
 		return
+	if picker != null and picker.visible:
+		match k.keycode:
+			KEY_1, KEY_2, KEY_3:
+				_pick(k.keycode - KEY_1)
+			KEY_R:
+				_reroll()
+			KEY_ESCAPE:
+				_leaving = true
+		return
 	if k.keycode == KEY_TAB or (k.keycode == KEY_ESCAPE and lab_open):
 		lab_open = not lab_open
 		lab_panel.visible = lab_open
+		if lab_open:
+			_refresh_options()
 		return
 	if lab_open and _lab_key(k):
 		return
@@ -304,9 +360,6 @@ func _key(k: InputEventKey) -> void:
 			_leaving = true
 		KEY_R:
 			session.reproduce()
-		KEY_ENTER, KEY_KP_ENTER:
-			if session.game_over:
-				session.restart()
 		KEY_1, KEY_2, KEY_3, KEY_P:
 			var s: int = {KEY_1: 1, KEY_2: 2, KEY_3: 4}.get(k.keycode, 0 if session.speed > 0 else 1)
 			if not session.set_speed(s):
@@ -315,6 +368,20 @@ func _key(k: InputEventKey) -> void:
 
 ## Gene lab keys while it is open. Returns false for keys it does not use.
 func _lab_key(k: InputEventKey) -> bool:
+	if k.keycode == KEY_B:
+		lab_bases = not lab_bases
+		return true
+	if not lab_bases: # evolve view: pick one of three real mutations, described in plain words
+		match k.keycode:
+			KEY_1, KEY_2, KEY_3:
+				var i := k.keycode - KEY_1
+				if i < _options.size():
+					session.mutate(_options[i]["m"])
+			KEY_R:
+				_refresh_options()
+			_:
+				return false
+		return true
 	match k.keycode:
 		KEY_LEFT:
 			cursor -= 10 if k.shift_pressed else 1
@@ -328,6 +395,121 @@ func _lab_key(k: InputEventKey) -> bool:
 			return false
 	cursor = clampi(cursor, 0, maxi(0, session.germline.length() - 1))
 	return true
+
+
+# ---------------------------------------------------------------- origin picker
+
+func _open_picker() -> void:
+	_choices = Traits.origins(_rng, 3)
+	for i in _cards.size():
+		var card: Array = _cards[i]
+		card[4].visible = i < _choices.size()
+		if i >= _choices.size():
+			continue
+		var dna := _choices[i]
+		var g := Genome.decode(dna)
+		var f := Traits.origin_feature(dna)
+		var r := Genome.radius(g) * Planet3D.S
+		card[0].build(g, r, world.planet.body_shape, false)
+		# the same camera for every card, so a Giant really looks bigger than a Mite
+		card[1].position = Vector3(0.0, 0.6, 2.7)
+		card[1].look_at(Vector3(0.0, 0.1, 0.0), Vector3.UP)
+		card[2].text = "%d. %s" % [i + 1, Traits.INFO[f][1]]
+		var t := "[b]%s:[/b] %s\n[b]%s:[/b] %s\n\n[table=2]" % [Traits.INFO[f][0], Traits.INFO[f][2], Traits.body_plan(g), Traits.body_plan_text(g)]
+		for st in [["size", "Size"], ["speed", "Speed"], ["sense", "Senses"], ["spikes", "Defense"], ["camo", "Camouflage"]]:
+			var n := roundi(g[st[0]] * 10.0)
+			t += "[cell]%s   [/cell][cell]%s[color=#ffffff40]%s[/color][/cell]" % [st[1], "█".repeat(n), "░".repeat(10 - n)]
+		card[3].text = t + "[/table]"
+	_picker_title.text = ("Your lineage has ended. " if session.game_over else "") + "Choose how your lineage begins"
+	_reroll_button.text = "Three new options (R): %d left" % _rerolls
+	_reroll_button.disabled = _rerolls <= 0
+	picker.visible = true
+
+
+func _pick(i: int) -> void:
+	if i >= 0 and i < _choices.size():
+		picker.visible = false
+		session.choose_origin(_choices[i])
+
+
+func _reroll() -> void:
+	if _rerolls > 0:
+		_rerolls -= 1
+		_open_picker()
+
+
+func _build_picker(root: Control) -> void:
+	picker = Control.new()
+	picker.set_anchors_preset(Control.PRESET_FULL_RECT)
+	picker.visible = false
+	root.add_child(picker)
+	var dim := ColorRect.new()
+	dim.color = Color(0.02, 0.03, 0.05, 0.72)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	picker.add_child(dim)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	picker.add_child(center)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 12)
+	center.add_child(col)
+	_picker_title = Label.new()
+	_picker_title.add_theme_font_size_override("font_size", 30)
+	_picker_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(_picker_title)
+	var sub := Label.new()
+	sub.text = "Three random genomes. Each is a simple blob with one feature; everything else your line will have to evolve."
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.modulate = Color(1, 1, 1, 0.75)
+	col.add_child(sub)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_child(row)
+	for i in 3:
+		var panel := PanelContainer.new()
+		panel.custom_minimum_size = Vector2(320, 0)
+		row.add_child(panel)
+		var box := VBoxContainer.new()
+		panel.add_child(box)
+		var view_box := SubViewportContainer.new()
+		view_box.stretch = true
+		view_box.custom_minimum_size = Vector2(300, 190)
+		box.add_child(view_box)
+		var view := SubViewport.new()
+		view.own_world_3d = true # the preview has its own little stage, apart from the planet
+		view.transparent_bg = true
+		view_box.add_child(view)
+		var sun := DirectionalLight3D.new()
+		sun.rotation_degrees = Vector3(-40, 30, 0)
+		view.add_child(sun)
+		var env := WorldEnvironment.new()
+		env.environment = Environment.new()
+		env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		env.environment.ambient_light_color = Color(0.6, 0.65, 0.7)
+		view.add_child(env)
+		var preview := CreatureModel.new()
+		view.add_child(preview)
+		var cam := Camera3D.new()
+		view.add_child(cam)
+		var title := Label.new()
+		title.add_theme_font_size_override("font_size", 24)
+		title.add_theme_color_override("font_color", Color("6df2c2"))
+		box.add_child(title)
+		var text := RichTextLabel.new()
+		text.bbcode_enabled = true
+		text.fit_content = true
+		text.scroll_active = false
+		text.custom_minimum_size = Vector2(300, 170)
+		box.add_child(text)
+		var choose := Button.new()
+		choose.text = "Begin as this (%d)" % (i + 1)
+		choose.pressed.connect(_pick.bind(i))
+		box.add_child(choose)
+		_cards.append([preview, cam, title, text, panel])
+	_reroll_button = Button.new()
+	_reroll_button.pressed.connect(_reroll)
+	col.add_child(_reroll_button)
 
 
 func _leave() -> void:
@@ -416,6 +598,7 @@ func _build_hud() -> void:
 		if c != lab_panel and c != lab_text:
 			(c as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_build_picker(root) # built after, so it keeps catching clicks
 
 
 func _label(parent: Control, pos: Vector2) -> Label:
@@ -495,7 +678,7 @@ func _update_hud(delta: float) -> void:
 		roundi(-20.0 + world.temp * 70.0), (world.sea_level - World.SEA) * planet.relief]
 	if p != null:
 		var need := world.breed_energy(p)
-		vitals_label.text = "You: generation %d   %d of your line alive" % [p.gen, session.my_line]
+		vitals_label.text = "You: generation %d   %s   %d of your line alive" % [p.gen, Traits.body_plan(p.g), session.my_line]
 		energy_bar.max_value = need
 		energy_bar.value = p.e
 		age_bar.max_value = World.LIFESPAN
@@ -505,8 +688,24 @@ func _update_hud(delta: float) -> void:
 			prompt_label.text = "R  lay an offspring"
 	else:
 		vitals_label.text = "Your lineage has ended." if session.game_over else ""
-		prompt_label.text = "Enter  start a new lineage" if session.game_over else ""
+		prompt_label.text = ""
 	if lab_open:
-		var header := "[b]GENE LAB[/b]  your germline, the DNA your offspring inherit  |  base %d of %d  |  %d / %d Cas9 charges" % [
+		lab_text.text = _lab_text()
+
+
+func _lab_text() -> String:
+	if session.germline == "":
+		return "Choose how your lineage begins first."
+	if lab_bases:
+		var header := "[b]GENE LAB[/b]  your germline, base by base  |  base %d of %d  |  %d / %d Cas9 charges  |  B: back to evolve" % [
 			cursor + 1, session.germline.length(), session.charges, Session.MAX_CHARGES]
-		lab_text.text = GeneLab.render(session.germline, cursor, maxi(20, int(lab_text.size.x / 11.0)), header, session.status)
+		return GeneLab.render(session.germline, cursor, maxi(20, int(lab_text.size.x / 11.0)), header, session.status)
+	var g := Genome.decode(session.germline)
+	var t := "[b]EVOLVE[/b]  your germline: what your offspring will be  |  %d / %d Cas9 charges\n" % [session.charges, Session.MAX_CHARGES]
+	t += "Body plan: [b]%s[/b] (%s).   Features: %s\n" % [Traits.body_plan(g), Traits.body_plan_text(g), Traits.feature_names(g)]
+	for i in _options.size():
+		t += "[color=#6df2c2][%d][/color]  %s\n" % [i + 1, _options[i]["text"]]
+	if _options.is_empty():
+		t += "No mutation with a visible effect turned up. Press R to look again.\n"
+	t += "[color=#9fb]1/2/3[/color] apply one (1 charge)    [color=#9fb]R[/color] other options    [color=#9fb]B[/color] edit bases by hand    [color=#9fb]Tab[/color] close\n"
+	return t + "[color=#7fa39d]%s[/color]" % session.status
